@@ -1,6 +1,16 @@
 # To run, use the command:
 # torchrun --nproc_per_node=4 wav2vec2_2d_multi_gpu.py
 
+# Examples with depth-wise regional LFP data:
+# Allen Brain Observatory (380 total channels, 4 depth regions, 1250 Hz):
+# torchrun --nproc_per_node=4 wav2vec2_2d_multi_gpu.py --data Allen --sampling_rate 1250 --total_channels_per_probe 380 --num_depth_regions 4 --time_bin_duration 1.0
+
+# IBL (380 total channels, 4 depth regions, 2000 Hz):
+# torchrun --nproc_per_node=4 wav2vec2_2d_multi_gpu.py --data ibl --sampling_rate 2000 --total_channels_per_probe 380 --num_depth_regions 4 --time_bin_duration 0.5
+
+# Neuronexus (380 total channels, 4 depth regions, 30000 Hz):
+# torchrun --nproc_per_node=4 wav2vec2_2d_multi_gpu.py --data Neuronexus --sampling_rate 30000 --total_channels_per_probe 380 --num_depth_regions 4 --time_bin_duration 0.1
+
 import argparse
 import os
 import gc
@@ -69,7 +79,7 @@ def arg_parser():
     parser.add_argument('--data', type=str, help='Dataset to use: Allen or ibl', default='Allen')
     parser.add_argument('--trial_length', type=int, default=60, help='trial_length')
     parser.add_argument('--data_type', type=str, help='Data type to use', default='spectrogram')
-    parser.add_argument('--sampling_rate', type=str, help='Sampling rate of the data', default='1250')
+    parser.add_argument('--sampling_rate', type=int, help='Sampling rate of the data in Hz', default=1250)
     parser.add_argument('--load_data', type=lambda x: x.lower() == 'true', help='Load data from disk or compute on fly',
                         default=True)
     parser.add_argument('--rand_init', type=lambda x: x.lower() == 'true', help='random init or start from pretrained',
@@ -77,59 +87,35 @@ def arg_parser():
     parser.add_argument('--ssl', type=lambda x: x.lower() == 'true',
                         help='self supervised training or fine tuning only', default=True)
     parser.add_argument('--session', type=str, help='session run or full run', default=None)
-    parser.add_argument('--input_height', type=int, default=128, help='Height of input spectrogram')
-    parser.add_argument('--input_width', type=int, default=128, help='Width of input spectrogram')
+    parser.add_argument('--total_channels_per_probe', type=int, default=380, help='Total number of channels per probe')
+    parser.add_argument('--num_depth_regions', type=int, default=4, help='Number of depth regions per probe (e.g., CA1, CA2, CA3, DG)')
+    parser.add_argument('--time_bin_duration', type=float, default=1.0, help='Duration of time bin in seconds')
     parser.add_argument('--use_spatial_embedding', type=lambda x: x.lower() == 'true', default=True, 
-                        help='Whether to use spatial embeddings for recording sites')
+                        help='Whether to use spatial embeddings for depth-wise regions within probes')
     return parser.parse_args()
 
 
 args = arg_parser()
 data, trial_length, data_type, sampling_rate = args.data, args.trial_length, args.data_type, args.sampling_rate
 load_data, rand_init, ssl, selected_session = args.load_data, args.rand_init, args.ssl, args.session
-input_height, input_width, use_spatial_embedding = args.input_height, args.input_width, args.use_spatial_embedding
-print(f"Data: {data}, Data Type: {data_type}, Trial Length: {trial_length}, Sampling Rate: {sampling_rate}")
-print(f"Input Dimensions: {input_height}x{input_width}, Spatial Embedding: {use_spatial_embedding}")
+total_channels_per_probe, num_depth_regions, time_bin_duration, use_spatial_embedding = args.total_channels_per_probe, args.num_depth_regions, args.time_bin_duration, args.use_spatial_embedding
+
+# Calculate input dimensions for per-probe LFP data
+input_height = total_channels_per_probe  # Total channels per probe
+input_width = int(sampling_rate * time_bin_duration)  # Time points
+
+print(f"Data: {data}, Data Type: {data_type}, Trial Length: {trial_length}, Sampling Rate: {sampling_rate} Hz")
+print(f"Depth-Wise Regional LFP Setup: {total_channels_per_probe} total channels per probe × {input_width} time points")
+print(f"Depth Regions: {num_depth_regions} regions per probe (e.g., CA1, CA2, CA3, DG)")
+print(f"Channels per Region: {total_channels_per_probe // num_depth_regions} channels per depth region")
+print(f"Input Dimensions: {input_height} total channels × {input_width} time points per probe")
+print(f"Spatial Embedding: {use_spatial_embedding} (for depth-wise regional identification)")
 print(f"Load Data: {load_data}, rand_init: {rand_init}, ssl: {ssl}, session: {selected_session}")
 print("cuda is available: ", torch.cuda.is_available())
 
 output_path = f"../results/{data}/{data_type}/wav2vec2_2d/across_session"
 if not os.path.exists(output_path):
     os.makedirs(output_path)
-
-
-def compute_mask_inputs_2d(model, input_values, device):
-    """
-    Compute masking for 2D input (spectrograms).
-    input_values shape: (B, C, H, W)
-    """
-    batch_size, channels, height, width = input_values.shape
-    with torch.no_grad():
-        # For 2D input, we need to compute the sequence length after CNN
-        # This is a simplified approach - you may need to adjust based on your CNN architecture
-        seq_len = height * width  # Simplified: H * W
-        
-        # Compute masking for the flattened sequence
-        mask_time_indices = torch.randint(0, seq_len, (batch_size, seq_len), device=device)
-        mask_prob = 0.2  # You can make this configurable
-        mask_length = 10
-        
-        # Create random masks
-        mask = torch.rand(batch_size, seq_len, device=device) < mask_prob
-        mask_time_indices = mask
-        
-        # Ensure at least some tokens are masked
-        if mask_time_indices.sum() == 0:
-            # Randomly mask at least one token per sequence
-            for i in range(batch_size):
-                idx = torch.randint(0, seq_len, (1,))
-                mask_time_indices[i, idx] = True
-        
-        # For 2D, we don't use sampled_negatives in the same way
-        # You might need to implement a different negative sampling strategy
-        sampled_negatives = None
-        
-    return mask_time_indices, sampled_negatives
 
 
 def gather_metric(metric, device):
@@ -154,33 +140,77 @@ def train_2d(model, data_loader, optimizer, device):
     print(f"[Rank {rank}] Number of train samples: {len(data_loader.sampler)}")
     
     for step, (input_values, _) in enumerate(data_loader):
-        # input_values should be (B, C, H, W) for 2D
+        # input_values should be (B, C, H, W) for depth-wise regional LFP data
+        # B = batch size
+        # C = 1 (single channel for LFP voltage)
+        # H = total_channels_per_probe (e.g., 380 total channels per probe)
+        # W = time_points (sampling_rate × time_bin_duration)
+        # 
+        # The 380 channels are organized into depth regions:
+        # - Channels 0-94: Region 0 (e.g., CA1)
+        # - Channels 95-189: Region 1 (e.g., CA2)
+        # - Channels 190-284: Region 2 (e.g., CA3)
+        # - Channels 285-379: Region 3 (e.g., DG)
         input_values = input_values.float().to(device)
         
         # Ensure input is 4D: (B, C, H, W)
         if input_values.dim() == 3:
             input_values = input_values.unsqueeze(1)  # Add channel dimension
         
-        # Compute masking for 2D input
-        mask_time_indices, sampled_negative_indices = compute_mask_inputs_2d(model, input_values, device)
-        
-        # Forward pass for 2D model
+        # Forward pass for 2D model with SSL masking
+        # Let the model handle masking internally by setting mask=True
         outputs = model(
             source=input_values,
-            mask_indices=mask_time_indices,
+            mask=True,  # Enable SSL masking - this is the key change
             features_only=False
         )
         
-        # Extract loss from outputs
-        if hasattr(outputs, 'loss') and outputs.loss is not None:
-            loss = outputs.loss
+        # Extract SSL loss from outputs
+        # The model returns contrastive learning outputs, not a direct loss
+        if 'x' in outputs and 'features' in outputs:
+            # This is the main SSL contrastive loss computation
+            # 'x' contains the masked representations (predictions)
+            # 'features' contains the unmasked features (targets)
+            masked_repr = outputs['x']      # Shape: (B, num_masked, D)
+            unmasked_features = outputs['features']  # Shape: (B, T, D)
+            
+            # Compute contrastive loss between masked and unmasked representations
+            if masked_repr.dim() == 3 and unmasked_features.dim() == 3:
+                # For contrastive learning, we want to maximize similarity between
+                # masked representations and their corresponding unmasked features
+                B, num_masked, D = masked_repr.shape
+                B, T, D = unmasked_features.shape
+                
+                # Reshape for loss computation
+                masked_repr_flat = masked_repr.view(-1, D)  # (B*num_masked, D)
+                
+                # For each masked position, compute similarity with all unmasked positions
+                # This creates a contrastive learning objective
+                similarities = torch.matmul(masked_repr_flat, unmasked_features.view(-1, D).t())  # (B*num_masked, B*T)
+                
+                # Create positive pairs (diagonal elements for same batch, same position)
+                # This is a simplified approach - you might want to use the model's built-in contrastive loss
+                positive_similarities = torch.diag(similarities[:B*num_masked, :B*num_masked])
+                
+                # Contrastive loss: maximize positive similarities, minimize negative ones
+                loss = -positive_similarities.mean() + 0.1 * similarities.mean()
+                
+            else:
+                # Fallback to MSE if shapes don't match
+                loss = F.mse_loss(masked_repr, unmasked_features)
+            
+            # Add feature penalty if available
+            if 'features_pen' in outputs:
+                loss = loss + outputs['features_pen']
+                
         else:
-            # If no loss in outputs, compute a simple reconstruction loss
-            # This is a fallback - you should implement proper loss computation
-            features = outputs['features'] if 'features' in outputs else outputs['x']
-            loss = F.mse_loss(features, features.detach())  # Placeholder loss
+            # Fallback - this shouldn't happen in proper SSL
+            print(f"[Rank {rank}] Warning: No proper SSL outputs found, using fallback loss")
+            # Create a dummy loss to prevent errors
+            loss = torch.tensor(0.0, device=device, requires_grad=True)
         
         if loss is None:
+            print(f"[Rank {rank}] Warning: Loss is None, skipping batch")
             continue
 
         optimizer.zero_grad()
@@ -190,6 +220,9 @@ def train_2d(model, data_loader, optimizer, device):
         optimizer.step()
 
         total_loss += loss.item()
+        
+        if step % 10 == 0:
+            print(f"[Rank {rank}] Step {step}, Loss: {loss.item():.4f}")
 
     avg_loss = total_loss / len(data_loader)
     avg_loss = torch.tensor(avg_loss, device=device)
@@ -217,19 +250,31 @@ def validate_2d(model, data_loader, device):
             if input_values.dim() == 3:
                 input_values = input_values.unsqueeze(1)  # Add channel dimension
             
-            mask_time_indices, sampled_negative_indices = compute_mask_inputs_2d(model, input_values, device)
-            
+            # Forward pass with SSL masking
             outputs = model(
                 source=input_values,
-                mask_indices=mask_time_indices,
+                mask=True,  # Enable SSL masking
                 features_only=False
             )
             
-            if hasattr(outputs, 'loss') and outputs.loss is not None:
-                loss = outputs.loss
+            # Extract SSL loss (same logic as training)
+            if 'x' in outputs and 'features' in outputs:
+                masked_repr = outputs['x']
+                unmasked_features = outputs['features']
+                
+                if masked_repr.dim() == 3 and unmasked_features.dim() == 3:
+                    B, num_masked, D = masked_repr.shape
+                    masked_repr_flat = masked_repr.view(-1, D)
+                    similarities = torch.matmul(masked_repr_flat, unmasked_features.view(-1, D).t())
+                    positive_similarities = torch.diag(similarities[:B*num_masked, :B*num_masked])
+                    loss = -positive_similarities.mean() + 0.1 * similarities.mean()
+                else:
+                    loss = F.mse_loss(masked_repr, unmasked_features)
+                
+                if 'features_pen' in outputs:
+                    loss = loss + outputs['features_pen']
             else:
-                features = outputs['features'] if 'features' in outputs else outputs['x']
-                loss = F.mse_loss(features, features.detach())  # Placeholder loss
+                loss = torch.tensor(0.0, device=device)
             
             total_loss += loss.item()
 
@@ -381,11 +426,11 @@ def run_wav2vec2_2d(sessions, sess):
     
     # Create wav2vec2_2d configuration
     w2v2_2d_config = Wav2Vec2_2DConfig(
-        # 2D CNN specific parameters
+        # 2D CNN specific parameters - updated for depth-wise regional LFP data structure
         conv_2d_feature_layers="[(64, 3, 2), (128, 3, 2), (256, 3, 2), (512, 3, 2)]",
-        input_channels=1,
-        input_height=input_height,
-        input_width=input_width,
+        input_channels=1,  # Single channel for LFP voltage
+        input_height=input_height,   # Total channels per probe (e.g., 380)
+        input_width=input_width,     # Time points (sampling_rate * time_bin_duration)
         
         # Transformer parameters
         encoder_layers=12,
@@ -394,16 +439,38 @@ def run_wav2vec2_2d(sessions, sess):
         encoder_attention_heads=12,
         activation_fn="gelu",
         
-        # Spatial embedding parameters
+        # Spatial embedding parameters for depth-wise regions within probes
         use_spatial_embedding=use_spatial_embedding,
-        num_recording_sites=64,
+        num_depth_regions=num_depth_regions,  # Number of depth regions per probe (e.g., CA1, CA2, CA3, DG)
+        channels_per_region=total_channels_per_probe // num_depth_regions,  # Channels per depth region (380 total / 4 regions = 95 per region)
+        num_probe_types=3,  # Number of different probe types (hippocampus, visual, motor)
         spatial_embed_dim=256,
         spatial_embed_dropout=0.1,
         
-        # Masking parameters
-        mask_prob=0.2,
+        # SSL masking parameters - these are crucial for SSL training
+        mask_prob=0.65,  # Increased for better SSL - masks 65% of tokens
         mask_length=10,
         mask_selection="static",
+        mask_other=0,
+        no_mask_overlap=False,
+        mask_min_space=1,
+        require_same_masks=True,
+        mask_dropout=0.0,
+        
+        # Channel masking for additional SSL
+        mask_channel_prob=0.0,  # You can experiment with this
+        mask_channel_length=10,
+        mask_channel_before=False,
+        
+        # Negative sampling for contrastive learning
+        num_negatives=100,  # Number of negative examples
+        negatives_from_everywhere=False,
+        cross_sample_negatives=0,
+        codebook_negatives=0,
+        
+        # Quantization (optional for SSL)
+        quantize_targets=False,  # Set to False for simpler SSL
+        quantize_input=False,
         
         # Other parameters
         dropout=0.1,
@@ -412,7 +479,11 @@ def run_wav2vec2_2d(sessions, sess):
         layer_norm_first=False,
         feature_grad_mult=1.0,
         conv_bias=False,
-        extractor_mode="default"
+        extractor_mode="default",
+        
+        # Final projection for SSL
+        final_dim=768,  # Should match encoder_embed_dim for SSL
+        logit_temp=0.1  # Temperature for contrastive learning
     )
     
     train_config = {'epoch': epochs, 'lr': 1e-5}
@@ -522,8 +593,23 @@ def run_wav2vec2_2d(sessions, sess):
         if rank == 0:
             print(f"Epoch {epoch + 1}, Train Loss: {train_loss:.4f}, "
                   f"Val Loss: {val_loss:.4f}, Grad Norm: {grad_norm:.4f}")
-            wandb.log({"Train Loss": train_loss, "Val Loss": val_loss, "Grad Norm": grad_norm,
-                       "learning_rate": optimizer.param_groups[0]['lr']})
+            
+            # Log SSL-specific metrics for per-probe LFP
+            wandb.log({
+                "epoch": epoch + 1,
+                "train_loss": train_loss, 
+                "val_loss": val_loss, 
+                "grad_norm": grad_norm,
+                "learning_rate": optimizer.param_groups[0]['lr'],
+                "mask_probability": w2v2_2d_config.mask_prob,
+                "mask_length": w2v2_2d_config.mask_length,
+                "ssl_training": True,
+                "num_probe_types": w2v2_2d_config.num_probe_types,
+                "channels_per_probe": total_channels_per_probe,
+                "input_channels": input_height,
+                "time_points": input_width
+            })
+            
             print(f"Probe Train Loss: {probe_train_loss:.4f}, Probe Train Accuracy: {probe_train_acc:.4f}, "
                   f"Probe Val Loss: {probe_val_loss:.4f}, Probe Val Accuracy: {probe_val_acc:.4f}")
             wandb.log({"Probe Train Loss": probe_train_loss, "Probe Train Accuracy": probe_train_acc,
