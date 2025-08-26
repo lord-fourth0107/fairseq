@@ -86,15 +86,21 @@ class Wav2Vec2_2DConfig(FairseqDataclass):
         default=128, metadata={"help": "width of input spectrogram"}
     )
     
-    # Spatial embedding parameters for recording sites
+    # Spatial embedding parameters for depth-wise regions within probes
     use_spatial_embedding: bool = field(
-        default=True, metadata={"help": "whether to use spatial embedding for recording sites"}
+        default=True, metadata={"help": "whether to use spatial embedding for depth-wise regions within probes"}
     )
-    num_recording_sites: int = field(
-        default=64, metadata={"help": "number of unique recording sites"}
+    num_depth_regions: int = field(
+        default=4, metadata={"help": "number of depth regions per probe (e.g., CA1, CA2, CA3, DG for hippocampus)"}
+    )
+    channels_per_region: int = field(
+        default=95, metadata={"help": "number of channels per depth region (e.g., 380 total channels / 4 regions = 95 per region)"}
+    )
+    num_probe_types: int = field(
+        default=3, metadata={"help": "number of different probe types (e.g., hippocampus, visual cortex, motor cortex)"}
     )
     spatial_embed_dim: int = field(
-        default=256, metadata={"help": "dimension of spatial embeddings"}
+        default=256, metadata={"help": "dimension of spatial embeddings for depth regions"}
     )
     spatial_embed_dropout: float = field(
         default=0.1, metadata={"help": "dropout for spatial embeddings"}
@@ -487,9 +493,11 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
 
         self.spatial_embedding = None
         if cfg.use_spatial_embedding:
+            # Spatial embeddings represent depth regions within probes
+            # Each depth region (e.g., CA1, CA2, CA3, DG) gets a unique embedding
             self.spatial_embedding = nn.Embedding(
-                cfg.num_recording_sites, 
-                cfg.spatial_embed_dim,
+                cfg.num_depth_regions,  # Number of depth regions per probe
+                cfg.spatial_embed_dim,  # Embedding dimension for each depth region
                 padding_idx=0  
             )
             self.spatial_embed_dropout = nn.Dropout(cfg.spatial_embed_dropout)
@@ -497,6 +505,9 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
                 cfg.spatial_embed_dim, 
                 cfg.encoder_embed_dim
             )
+            # Store depth region parameters for automatic region ID generation
+            self.channels_per_region = cfg.channels_per_region
+            self.num_depth_regions = cfg.num_depth_regions
 
         self._calculate_output_dims(cfg)
 
@@ -838,16 +849,46 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
         if self.post_extract_proj is not None:
             features = self.post_extract_proj(features)
 
-        if self.spatial_embedding is not None and recording_site_ids is not None:
-            spatial_embeds = self.spatial_embedding(recording_site_ids)  # (B, spatial_embed_dim)
+        if self.spatial_embedding is not None:
+            # For depth-wise regional input, we need to determine which depth region each channel belongs to
+            if recording_site_ids is None:
+                # Automatically generate depth region IDs based on channel positions
+                # Each channel belongs to a specific depth region within the probe
+                B, C, H, W = source.shape  # source is (B, 1, total_channels, time_points)
+                total_channels = H
+                
+                # Calculate which depth region each channel belongs to
+                # Example: 380 channels, 4 regions, 95 channels per region
+                # Channels 0-94 → Region 0 (CA1)
+                # Channels 95-189 → Region 1 (CA2)  
+                # Channels 190-284 → Region 2 (CA3)
+                # Channels 285-379 → Region 3 (DG)
+                
+                # Create depth region IDs for each channel
+                region_ids = torch.arange(
+                    self.num_depth_regions, 
+                    device=source.device
+                ).repeat_interleave(self.channels_per_region)
+                
+                # Expand to batch dimension
+                recording_site_ids = region_ids.unsqueeze(0).expand(B, -1)  # (B, total_channels)
+                
+                # Alternative: If you have explicit depth region information:
+                # recording_site_ids = extract_depth_region_ids_from_data(source, ...)
+            
+            # Apply spatial embeddings for depth regions
+            # Each depth region gets a unique embedding representing its anatomical location
+            spatial_embeds = self.spatial_embedding(recording_site_ids)  # (B, total_channels, spatial_embed_dim)
             spatial_embeds = self.spatial_embed_dropout(spatial_embeds)
             
-            spatial_embeds = self.spatial_projection(spatial_embeds)  # (B, encoder_embed_dim)
+            spatial_embeds = self.spatial_projection(spatial_embeds)  # (B, total_channels, encoder_embed_dim)
             
             # Add spatial embeddings to each position in the sequence
+            # features is (B, H*W, C) where H*W = total_channels * reduced_time
             spatial_embeds_expanded = spatial_embeds.unsqueeze(1).expand(-1, features.size(1), -1)  # (B, H*W, encoder_embed_dim)
             
             # Add spatial embeddings to features
+            # This gives each channel information about which depth region it belongs to
             features = features + spatial_embeds_expanded
 
         features = self.dropout_input(features)
