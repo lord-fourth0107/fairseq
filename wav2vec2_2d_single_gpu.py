@@ -23,8 +23,8 @@ from scipy.signal import resample
 from sklearn.model_selection import train_test_split
 from datasets import Dataset, DatasetDict, Features, ClassLabel, Sequence, Value
 from fairseq.models.wav2vec.wav2vec2_2d import Wav2Vec2_2DConfig, Wav2Vec2_2DModel
-from fairseq.tasks.wav2vec_pretraining import Wav2VecPretrainingTask
-from fairseq.criterions.wav2vec_criterion import Wav2VecCriterion
+# from fairseq.tasks.wav2vec_pretraining import Wav2VecPretrainingTask
+# from fairseq.criterions.wav2vec_criterion import Wav2VecCriterion
 from fairseq.dataclass import FairseqDataclass
 from blind_localization.data.PCAviz import PCAVisualizer
 from blind_localization.data.lazyloader_dataset import SessionDataset
@@ -118,12 +118,41 @@ def train_2d(model, data_loader, optimizer, device):
     print(f"Number of train samples: {len(data_loader)}")
     
     for step, (input_values, _) in enumerate(data_loader):
-        # input_values should be (B, C, H, W) for 2D
+        # input_values comes as (B, signal_length) from SessionDataset
+        # We need to reshape it to (B, C, H, W) for 2D CNN
         input_values = input_values.float().to(device)
         
-        # Ensure input is 4D: (B, C, H, W)
-        if input_values.dim() == 3:
-            input_values = input_values.unsqueeze(1)  # Add channel dimension
+        # Debug: Print original shape
+        if step == 0:
+            print(f"Original input shape: {input_values.shape}")
+            print(f"Sample signal length: {input_values.shape[1]}")
+        
+        # Reshape 1D signal to 2D spectrogram-like format
+        batch_size, signal_length = input_values.shape
+        
+        # Calculate dimensions for 2D reshaping
+        # For 128x128 output, we need signal_length = 128*128 = 16384
+        # If signal is shorter, we'll pad; if longer, we'll truncate
+        target_size = 128 * 128  # input_height * input_width
+        
+        if signal_length < target_size:
+            # Pad with zeros if signal is too short
+            padding = torch.zeros(batch_size, target_size - signal_length, device=device)
+            input_values = torch.cat([input_values, padding], dim=1)
+            if step == 0:
+                print(f"Padded signal from {signal_length} to {target_size}")
+        else:
+            # Truncate if signal is too long
+            input_values = input_values[:, :target_size]
+            if step == 0:
+                print(f"Truncated signal from {signal_length} to {target_size}")
+        
+        # Reshape to (B, C, H, W) where C=1, H=128, W=128
+        input_values = input_values.view(batch_size, 1, 128, 128)
+        
+        if step == 0:
+            print(f"Final input shape: {input_values.shape}")
+            print(f"Input range: [{input_values.min():.3f}, {input_values.max():.3f}]")
         
         # Compute masking for 2D input
         mask_time_indices, sampled_negative_indices = compute_mask_inputs_2d(model, input_values, device)
@@ -170,9 +199,18 @@ def validate_2d(model, data_loader, device):
         for step, (input_values, _) in enumerate(data_loader):
             input_values = input_values.float().to(device)
             
-            # Ensure input is 4D: (B, C, H, W)
-            if input_values.dim() == 3:
-                input_values = input_values.unsqueeze(1)  # Add channel dimension
+            # Reshape 1D signal to 2D spectrogram-like format (same as training)
+            batch_size, signal_length = input_values.shape
+            target_size = 128 * 128  # input_height * input_width
+            
+            if signal_length < target_size:
+                padding = torch.zeros(batch_size, target_size - signal_length, device=device)
+                input_values = torch.cat([input_values, padding], dim=1)
+            else:
+                input_values = input_values[:, :target_size]
+            
+            # Reshape to (B, C, H, W) where C=1, H=128, W=128
+            input_values = input_values.view(batch_size, 1, 128, 128)
             
             mask_time_indices, sampled_negative_indices = compute_mask_inputs_2d(model, input_values, device)
             
@@ -231,9 +269,18 @@ def train_probe_2d(prober, train_loader, val_loader, device):
     for xb, yb in train_loader:
         xb, yb = xb.to(device), yb.to(device)
         
-        # Ensure input is 4D: (B, C, H, W)
-        if xb.dim() == 3:
-            xb = xb.unsqueeze(1)
+        # Reshape 1D signal to 2D spectrogram-like format (same as training)
+        batch_size, signal_length = xb.shape
+        target_size = 128 * 128  # input_height * input_width
+        
+        if signal_length < target_size:
+            padding = torch.zeros(batch_size, target_size - signal_length, device=device)
+            xb = torch.cat([xb, padding], dim=1)
+        else:
+            xb = xb[:, :target_size]
+        
+        # Reshape to (B, C, H, W) where C=1, H=128, W=128
+        xb = xb.view(batch_size, 1, 128, 128)
             
         logits = prober(xb)
         loss = criterion(logits, yb)
@@ -249,9 +296,18 @@ def train_probe_2d(prober, train_loader, val_loader, device):
         for xb, yb in val_loader:
             xb, yb = xb.to(device), yb.to(device)
             
-            # Ensure input is 4D: (B, C, H, W)
-            if xb.dim() == 3:
-                xb = xb.unsqueeze(1)
+            # Reshape 1D signal to 2D spectrogram-like format (same as training)
+            batch_size, signal_length = xb.shape
+            target_size = 128 * 128  # input_height * input_width
+            
+            if signal_length < target_size:
+                padding = torch.zeros(batch_size, target_size - signal_length, device=device)
+                xb = torch.cat([xb, padding], dim=1)
+            else:
+                xb = xb[:, :target_size]
+            
+            # Reshape to (B, C, H, W) where C=1, H=128, W=128
+            xb = xb.view(batch_size, 1, 128, 128)
                 
             logits = prober(xb)
             loss = criterion(logits, yb)
@@ -404,7 +460,9 @@ def run_wav2vec2_2d(sessions, sess):
     print(f"Model moved to device: {device}")
     
     # Save the model configuration
-    ssl_model.save_pretrained(f"{output_path}/{session}/ssl_model/")
+    os.makedirs(f"{output_path}/{session}/ssl_model/", exist_ok=True)
+    torch.save(ssl_model.state_dict(), f"{output_path}/{session}/ssl_model/model.pt")
+    torch.save(w2v2_2d_config, f"{output_path}/{session}/ssl_model/config.pt")
 
     # self supervised pretraining
     optimizer = torch.optim.AdamW(ssl_model.parameters(), lr=train_config['lr'])
@@ -493,7 +551,8 @@ def run_wav2vec2_2d(sessions, sess):
         
         if probe_val_acc >= max_probe_acc:
             max_probe_acc = max(max_probe_acc, probe_val_acc)
-            ssl_model.save_pretrained(f"{output_path}/{session}/ssl_model/")
+            torch.save(ssl_model.state_dict(), f"{output_path}/{session}/ssl_model/best_model.pt")
+            torch.save(w2v2_2d_config, f"{output_path}/{session}/ssl_model/best_config.pt")
 
     print("Training completed!")
 
