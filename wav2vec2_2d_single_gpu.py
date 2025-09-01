@@ -225,8 +225,16 @@ def train_2d(model, data_loader, optimizer, device):
                     try:
                         test_layer_norm_output = model.layer_norm(test_features)
                         print(f"✅ Layer_norm test successful! Output shape: {test_layer_norm_output.shape}")
+                        
+                        # Test post_extract_proj layer
+                        if model.post_extract_proj is not None:
+                            test_proj_output = model.post_extract_proj(test_layer_norm_output)
+                            print(f"✅ Post_extract_proj test successful! Output shape: {test_proj_output.shape}")
+                        else:
+                            print(f"ℹ️ Post_extract_proj is None (no projection needed)")
+                            
                     except Exception as e:
-                        print(f"❌ Layer_norm test failed: {e}")
+                        print(f"❌ Layer_norm or post_extract_proj test failed: {e}")
                     
             except Exception as e:
                 print(f"❌ Error in test forward pass: {e}")
@@ -603,6 +611,49 @@ def run_wav2vec2_2d(sessions, sess):
         from fairseq.modules import LayerNorm
         ssl_model.layer_norm = LayerNorm(expected_embed_dim).to(device)
         print(f"   ✅ Layer_norm recreated with correct dimensions: {ssl_model.layer_norm.normalized_shape}")
+        
+        # Fix the post_extract_proj layer dimensions
+        print(f"🔧 Fixing post_extract_proj dimensions...")
+        print(f"   Current post_extract_proj input size: {ssl_model.post_extract_proj.in_features if ssl_model.post_extract_proj else 'None'}")
+        print(f"   Current post_extract_proj output size: {ssl_model.post_extract_proj.out_features if ssl_model.post_extract_proj else 'None'}")
+        
+        # Calculate correct input size for post_extract_proj
+        # After reshape: [B, H*W, C] -> post_extract_proj should take C as input
+        correct_input_size = expected_embed_dim  # 512
+        correct_output_size = w2v2_2d_config.encoder_embed_dim  # 768
+        
+        print(f"   Correct input size should be: {correct_input_size}")
+        print(f"   Correct output size should be: {correct_output_size}")
+        
+        # Recreate post_extract_proj with correct dimensions
+        import torch.nn as nn
+        ssl_model.post_extract_proj = nn.Linear(correct_input_size, correct_output_size).to(device)
+        print(f"   ✅ Post_extract_proj recreated with correct dimensions: {correct_input_size} -> {correct_output_size}")
+        
+        # Check and recreate other dimension-dependent layers
+        print(f"🔧 Checking other dimension-dependent layers...")
+        
+        # Check project_q layer (if it exists and uses old dimensions)
+        if hasattr(ssl_model, 'project_q') and ssl_model.project_q is not None:
+            old_project_q_input = ssl_model.project_q.in_features
+            if old_project_q_input != correct_input_size:
+                print(f"   🔧 Recreating project_q: {old_project_q_input} -> {correct_input_size}")
+                ssl_model.project_q = nn.Linear(correct_input_size, ssl_model.project_q.out_features).to(device)
+                print(f"   ✅ Project_q recreated")
+        
+        # Check project_inp layer (if it exists and uses old dimensions)
+        if hasattr(ssl_model, 'project_inp') and ssl_model.project_inp is not None:
+            old_project_inp_input = ssl_model.project_inp.in_features
+            if old_project_inp_input != correct_input_size:
+                print(f"   🔧 Recreating project_inp: {old_project_inp_input} -> {correct_input_size}")
+                ssl_model.project_inp = nn.Linear(correct_input_size, ssl_model.project_inp.out_features).to(device)
+                print(f"   ✅ Project_inp recreated")
+        
+        # Check spatial_projection layer (if it exists)
+        if hasattr(ssl_model, 'spatial_projection') and ssl_model.spatial_projection is not None:
+            print(f"   ℹ️ Spatial_projection exists: {ssl_model.spatial_projection.in_features} -> {ssl_model.spatial_projection.out_features}")
+        
+        print(f"   ✅ All dimension-dependent layers checked and updated")
         
         # Save the model configuration and initial state
         os.makedirs(f"{output_path}/{session}/ssl_model/", exist_ok=True)
