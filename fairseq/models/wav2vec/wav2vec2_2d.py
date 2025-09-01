@@ -265,6 +265,9 @@ class Wav2Vec2_2DConfig(FairseqDataclass):
     codebook_negatives: int = field(
         default=0, metadata={"help": "number of negative examples codebook"}
     )
+    sample_distance: int = field(
+        default=None, metadata={"help": "maximum distance for negative sampling"}
+    )
 
     # positional embeddings
     conv_pos: int = field(
@@ -546,6 +549,7 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
         self.cross_sample_negatives = cfg.cross_sample_negatives
         self.codebook_negatives = cfg.codebook_negatives
         self.negatives_from_everywhere = cfg.negatives_from_everywhere
+        self.sample_distance = cfg.sample_distance
 
         self.logit_temp = cfg.logit_temp
 
