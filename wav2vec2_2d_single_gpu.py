@@ -259,7 +259,7 @@ def train_2d(model, data_loader, optimizer, device):
             print(f"Input range: [{input_values.min():.6f}, {input_values.max():.6f}]")
         
         # ROBUST INPUT SHAPE HANDLING - Comprehensive fix for all dimension issues
-        input_values = self._robust_normalize_input_shape(input_values, step)
+        input_values = _robust_normalize_input_shape(input_values, step)
         
         if step == 0:
             print(f"Final input shape for 2D CNN: {input_values.shape}")
