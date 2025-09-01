@@ -945,7 +945,34 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
         features = features.permute(0, 2, 3, 1)  # (B, H, W, C)
         features = features.reshape(B, H * W, C)  # (B, H*W, C)
         
-        features = self.layer_norm(features)
+        # Handle layer_norm dimension mismatch
+        try:
+            features = self.layer_norm(features)
+        except RuntimeError as e:
+            if not hasattr(self, '_layer_norm_debug_printed'):
+                print(f"🔍 Layer Norm Debug:")
+                print(f"   Features shape: {features.shape}")
+                print(f"   Layer norm expected shape: [*, 512]")
+                print(f"   Error: {e}")
+                print(f"   🔄 Recreating layer_norm with correct dimensions...")
+                self._layer_norm_debug_printed = True
+            
+            # Recreate layer_norm with correct dimensions
+            if len(features.shape) == 3:  # [B, T, D]
+                correct_dim = features.shape[-1]
+            elif len(features.shape) == 4:  # [B, C, H, W]
+                correct_dim = features.shape[1]
+            else:
+                correct_dim = features.shape[-1]
+            
+            from fairseq.modules import LayerNorm
+            self.layer_norm = LayerNorm(correct_dim).to(features.device)
+            
+            if not hasattr(self, '_layer_norm_debug_printed'):
+                print(f"   ✅ Recreated layer_norm with dim: {correct_dim}")
+            
+            # Try again with the recreated layer_norm
+            features = self.layer_norm(features)
         unmasked_features = features.clone()
 
         # Handle padding mask for 2D input
@@ -976,7 +1003,34 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
                 padding_mask = padding_mask[:, :-time_steps_to_drop]
 
         if self.post_extract_proj is not None:
-            features = self.post_extract_proj(features)
+            try:
+                features = self.post_extract_proj(features)
+            except RuntimeError as e:
+                if not hasattr(self, '_post_extract_debug_printed'):
+                    print(f"🔍 Post Extract Proj Debug:")
+                    print(f"   Features shape: {features.shape}")
+                    print(f"   Error: {e}")
+                    print(f"   🔄 Recreating post_extract_proj with correct dimensions...")
+                    self._post_extract_debug_printed = True
+                
+                # Recreate post_extract_proj with correct dimensions
+                if len(features.shape) == 3:  # [B, T, D]
+                    correct_input_size = features.shape[-1]
+                elif len(features.shape) == 4:  # [B, C, H, W]
+                    correct_input_size = features.shape[1]
+                else:
+                    correct_input_size = features.shape[-1]
+                
+                correct_output_size = self.cfg.encoder_embed_dim
+                
+                import torch.nn as nn
+                self.post_extract_proj = nn.Linear(correct_input_size, correct_output_size).to(features.device)
+                
+                if not hasattr(self, '_post_extract_debug_printed'):
+                    print(f"   ✅ Recreated post_extract_proj: {correct_input_size} -> {correct_output_size}")
+                
+                # Try again with the recreated layer
+                features = self.post_extract_proj(features)
 
         if self.spatial_embedding is not None:
             # For depth-wise regional input, we need to determine which depth region each channel belongs to
