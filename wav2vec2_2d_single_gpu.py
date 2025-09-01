@@ -531,9 +531,11 @@ def train_probe_2d(prober, train_loader, val_loader, device):
             logits = logits[:min_batch_size]
             yb = yb[:min_batch_size]
             
-            print(f"   ✅ Adjusted to batch size: {min_batch_size}")
-            print(f"   Final logits shape: {logits.shape}")
-            print(f"   Final targets shape: {yb.shape}")
+            if not hasattr(prober, '_batch_size_adjustment_printed'):
+                print(f"   ✅ Adjusted to batch size: {min_batch_size}")
+                print(f"   Final logits shape: {logits.shape}")
+                print(f"   Final targets shape: {yb.shape}")
+                prober._batch_size_adjustment_printed = True
         
         # Add timeout protection for loss computation
         try:
@@ -584,7 +586,9 @@ def train_probe_2d(prober, train_loader, val_loader, device):
                 logits = logits[:min_batch_size]
                 yb = yb[:min_batch_size]
                 
-                print(f"   ✅ Val adjusted to batch size: {min_batch_size}")
+                if not hasattr(prober, '_val_batch_size_adjustment_printed'):
+                    print(f"   ✅ Val adjusted to batch size: {min_batch_size}")
+                    prober._val_batch_size_adjustment_printed = True
             
             # Additional safety check before loss computation
             if logits.shape[0] != yb.shape[0]:
