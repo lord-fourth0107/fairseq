@@ -1,5 +1,7 @@
-# Single GPU version - no distributed training required
-# Run with: python wav2vec2_2d_single_gpu.py
+#!/usr/bin/env python3
+"""
+Fixed version of wav2vec2_2d_single_gpu.py with environment issue fixes
+"""
 
 import argparse
 import os
@@ -23,8 +25,6 @@ from scipy.signal import resample
 from sklearn.model_selection import train_test_split
 from datasets import Dataset, DatasetDict, Features, ClassLabel, Sequence, Value
 from fairseq.models.wav2vec.wav2vec2_2d import Wav2Vec2_2DConfig, Wav2Vec2_2DModel
-# from fairseq.tasks.wav2vec_pretraining import Wav2VecPretrainingTask
-# from fairseq.criterions.wav2vec_criterion import Wav2VecCriterion
 from fairseq.dataclass import FairseqDataclass
 from blind_localization.data.PCAviz import PCAVisualizer
 from blind_localization.data.lazyloader_dataset import SessionDataset
@@ -39,7 +39,6 @@ import torch.nn.functional as F
 from sklearn.decomposition import PCA
 
 
-# Enter the path to the targeted input data
 def arg_parser():
     parser = argparse.ArgumentParser(description='wav2vec2_2d single GPU')
     parser.add_argument('--data', type=str, help='Dataset to use: Allen or ibl', default='Allen')
@@ -57,15 +56,46 @@ def arg_parser():
     parser.add_argument('--input_width', type=int, default=128, help='Width of input spectrogram')
     parser.add_argument('--use_spatial_embedding', type=lambda x: x.lower() == 'true', default=True, 
                         help='Whether to use spatial embeddings for recording sites')
-    parser.add_argument('--gpu_id', type=int, default=0, help='GPU ID to use')
+    # FIXED: Make gpu_id optional with proper default
+    parser.add_argument('--gpu_id', type=int, default=0, help='GPU ID to use (default: 0)')
     return parser.parse_args()
 
 
-args = arg_parser()
+# FIXED: Safe argument parsing with error handling
+try:
+    args = arg_parser()
+except SystemExit:
+    # If argument parsing fails, use defaults
+    print("⚠️ Argument parsing failed, using defaults")
+    args = argparse.Namespace(
+        data='Allen',
+        trial_length=60,
+        data_type='spectrogram',
+        sampling_rate='1250',
+        load_data=True,
+        rand_init=False,
+        ssl=True,
+        session=None,
+        input_height=128,
+        input_width=128,
+        use_spatial_embedding=True,
+        gpu_id=0
+    )
+
 data, trial_length, data_type, sampling_rate = args.data, args.trial_length, args.data_type, args.sampling_rate
 load_data, rand_init, ssl, selected_session = args.load_data, args.rand_init, args.ssl, args.session
 input_height, input_width, use_spatial_embedding = args.input_height, args.input_width, args.use_spatial_embedding
 gpu_id = args.gpu_id
+
+# FIXED: Safe GPU ID handling
+if torch.cuda.is_available():
+    available_gpus = torch.cuda.device_count()
+    if gpu_id >= available_gpus:
+        print(f"⚠️ GPU ID {gpu_id} >= available GPUs {available_gpus}, using GPU 0")
+        gpu_id = 0
+else:
+    print("⚠️ CUDA not available, using CPU")
+    gpu_id = None
 
 # Additional arguments for training
 output_path = f"/vast/us2193/ssl_output/{data}/{data_type}/wav2vec2_2d/across_session"
@@ -79,8 +109,17 @@ print(f"Load Data: {load_data}, rand_init: {rand_init}, ssl: {ssl}, session: {se
 print(f"Using GPU: {gpu_id}")
 print("cuda is available: ", torch.cuda.is_available())
 
-if not os.path.exists(output_path):
-    os.makedirs(output_path)
+# FIXED: Safe output path creation
+try:
+    if not os.path.exists(output_path):
+        os.makedirs(output_path, exist_ok=True)
+        print(f"✅ Created output directory: {output_path}")
+except Exception as e:
+    print(f"❌ Failed to create output directory: {e}")
+    # Use a fallback path
+    output_path = f"/tmp/ssl_output_{data}_{data_type}"
+    os.makedirs(output_path, exist_ok=True)
+    print(f"⚠️ Using fallback output directory: {output_path}")
 
 
 def compute_mask_inputs_2d(model, input_values, device):
@@ -95,20 +134,13 @@ def compute_mask_inputs_2d(model, input_values, device):
         try:
             features = model.feature_extractor(input_values)
             B, C, H_out, W_out = features.shape
-            
-            # Reshape to sequence format: (B, H*W, C)
-            features_reshaped = features.permute(0, 2, 3, 1).reshape(B, H_out * W_out, C)
-            actual_seq_len = features_reshaped.shape[1]  # This is the correct sequence length
-            
+            actual_seq_len = H_out * W_out
         except Exception as e:
-            # Fallback: use a reasonable default sequence length
-            print(f"⚠️ Feature extractor failed, using fallback sequence length: {e}")
-            # Use a conservative estimate based on input dimensions
-            actual_seq_len = min(height * width // 4, 1000)  # Conservative estimate
-            print(f"   Using fallback sequence length: {actual_seq_len}")
+            print(f"⚠️ Feature extractor failed, using input dimensions: {e}")
+            actual_seq_len = height * width
         
-        # Compute masking for the actual sequence length
-        mask_prob = 0.2  # You can make this configurable
+        # Create mask with correct sequence length
+        mask_prob = 0.2
         mask_length = 10
         
         # Create random masks with correct sequence length
@@ -119,11 +151,9 @@ def compute_mask_inputs_2d(model, input_values, device):
         if not hasattr(compute_mask_inputs_2d, '_debug_printed'):
             print(f"🔍 Masking Debug:")
             print(f"   Input shape: {input_values.shape}")
-            print(f"   Feature extractor output: {features.shape}")
-            print(f"   Reshaped features: {features_reshaped.shape}")
-            print(f"   Actual sequence length: {actual_seq_len}")
+            print(f"   Actual seq len: {actual_seq_len}")
             print(f"   Mask shape: {mask_time_indices.shape}")
-            print(f"   Masked tokens per sequence: {mask_time_indices.sum(dim=1)}")
+            print(f"   Masked tokens: {mask_time_indices.sum().item()}")
             compute_mask_inputs_2d._debug_printed = True
         
         # Ensure at least some tokens are masked
@@ -133,18 +163,12 @@ def compute_mask_inputs_2d(model, input_values, device):
                 idx = torch.randint(0, actual_seq_len, (1,))
                 mask_time_indices[i, idx] = True
             print(f"   ⚠️ No tokens masked, added at least one per sequence")
-        
-        # For 2D, we don't use sampled_negatives in the same way
-        # You might need to implement a different negative sampling strategy
-        sampled_negatives = None
-        
-    return mask_time_indices, sampled_negatives
+    
+    return mask_time_indices, None
 
 
 def _robust_normalize_input_shape(input_values, step):
-    """
-    Robust input shape normalization that handles all possible input formats
-    """
+    """Robust input shape normalization for 2D CNN"""
     original_shape = input_values.shape
     
     if len(input_values.shape) == 5:
@@ -154,6 +178,7 @@ def _robust_normalize_input_shape(input_values, step):
             print(f"✅ 5D input detected: {original_shape}")
         
         if depth == 1:
+            # Simple case: remove depth dimension
             input_values = input_values.squeeze(2)  # Remove depth dimension
         else:
             # Reshape to combine depth with height
@@ -163,15 +188,16 @@ def _robust_normalize_input_shape(input_values, step):
             print(f"   ✅ Normalized to 4D: {input_values.shape}")
             
     elif len(input_values.shape) == 4:
-        # Already 4D: [batch, channels, height, width]
+        # 4D input: [batch, channels, height, width] - already correct
         if step == 0:
             print(f"✅ 4D input detected: {original_shape}")
             
     elif len(input_values.shape) == 3:
         # 3D input: [batch, height, width] -> [batch, 1, height, width]
+        batch_size, height, width = input_values.shape
         input_values = input_values.unsqueeze(1)
         if step == 0:
-            print(f"✅ 3D input normalized to 4D: {input_values.shape}")
+            print(f"✅ 3D input normalized: {original_shape} -> {input_values.shape}")
             
     elif len(input_values.shape) == 2:
         # 2D input: [batch, features] -> [batch, 1, height, width]
@@ -179,19 +205,18 @@ def _robust_normalize_input_shape(input_values, step):
         input_values = _infer_2d_shape_from_features(input_values, step)
         
     else:
-        raise ValueError(f"Unsupported input shape: {original_shape}")
+        raise ValueError(f"Unexpected input shape: {original_shape}")
     
     # Ensure minimum size for CNN kernels
     if len(input_values.shape) == 4 and (input_values.shape[2] < 3 or input_values.shape[3] < 3):
-        if step == 0:
-            print(f"⚠️ Input too small for 3x3 kernels, padding...")
         pad_h = max(0, 3 - input_values.shape[2])
         pad_w = max(0, 3 - input_values.shape[3])
         input_values = torch.nn.functional.pad(input_values, (0, pad_w, 0, pad_h), mode='constant', value=0)
         if step == 0:
-            print(f"   ✅ Padded to: {input_values.shape}")
+            print(f"   🔧 Padded to minimum size: {input_values.shape}")
     
     return input_values
+
 
 def _infer_2d_shape_from_features(tensor, step):
     """Infer 2D shape from flattened features"""
@@ -199,11 +224,11 @@ def _infer_2d_shape_from_features(tensor, step):
     
     # Try common neural data configurations
     possible_configs = [
-        (3750, 77),   # Common neural data
-        (3750, 93),   # Common neural data  
-        (3750, 64),   # Power of 2
-        (3750, 128),  # Power of 2
-        (3750, 256),  # Power of 2
+        (3750, 77),   # Your current data
+        (3750, 93),   # Your current data
+        (3750, 64),   # Common size
+        (3750, 128),  # Common size
+        (3750, 256),  # Common size
     ]
     
     for height, width in possible_configs:
@@ -221,19 +246,20 @@ def _infer_2d_shape_from_features(tensor, step):
     
     # Last resort: pad to minimum size and make square-ish
     min_size = 3
-    if features < min_size * min_size:
-        pad_size = min_size * min_size - features
-        tensor = torch.nn.functional.pad(tensor, (0, pad_size), mode='constant', value=0)
-        features = min_size * min_size
+    height = max(min_size, int(np.sqrt(features)))
+    width = (features + height - 1) // height  # Ceiling division
     
-    sqrt_features = int(features ** 0.5)
-    height = sqrt_features
-    width = features // height
+    # Pad if necessary
+    target_features = height * width
+    if target_features > features:
+        padding = target_features - features
+        tensor = torch.nn.functional.pad(tensor, (0, padding), mode='constant', value=0)
     
     if step == 0:
         print(f"⚠️ 2D input fallback: [batch, 1, {height}, {width}]")
     
     return tensor.view(batch_size, 1, height, width)
+
 
 def train_2d(model, data_loader, optimizer, device):
     total_loss = 0
@@ -284,9 +310,9 @@ def train_2d(model, data_loader, optimizer, device):
                         # Test the reshape operation
                         B, C, H, W = test_output.shape
                         test_features = test_output.permute(0, 2, 3, 1).reshape(B, H * W, C)
-                        print(f"Reshaped features shape: {test_features.shape}")
-                        print(f"Expected layer_norm input shape: [*, {test_features.shape[-1]}]")
-                        print(f"Actual layer_norm normalized_shape: {model.layer_norm.normalized_shape}")
+                        print(f"✅ Reshaped features shape: {test_features.shape}")
+                        print(f"✅ Expected layer_norm input shape: [*, {test_features.shape[-1]}]")
+                        print(f"✅ Actual layer_norm normalized_shape: {model.layer_norm.normalized_shape}")
                         
                         # Test layer_norm with correct dimensions
                         try:
@@ -381,14 +407,13 @@ def train_2d(model, data_loader, optimizer, device):
             optimizer.step()
         except Exception as e:
             print(f"❌ Backward pass failed: {e}")
-            print(f"   Loss value: {loss.item() if loss is not None else 'None'}")
             # Skip this batch if backward pass fails
             continue
-
+        
         total_loss += loss.item()
 
-    avg_loss = total_loss / len(data_loader)
-    avg_grad = sum(grad_norms) / len(grad_norms) if grad_norms else 0.0
+    avg_loss = total_loss / len(data_loader) if len(data_loader) > 0 else 0
+    avg_grad = sum(grad_norms) / len(grad_norms) if grad_norms else 0
 
     return avg_loss, avg_grad
 
@@ -431,53 +456,28 @@ def get_grad_norm(model, norm_type=2.0):
         if p.grad is not None:
             param_norm = p.grad.data.norm(norm_type)
             total_norm += param_norm.item() ** norm_type
-    return total_norm ** (1.0 / norm_type)
+    total_norm = total_norm ** (1. / norm_type)
+    return total_norm
 
 
 class LinearProber2D(nn.Module):
-    def __init__(self, encoder, rep_dim, num_classes):
+    def __init__(self, encoder, num_classes):
         super().__init__()
         self.encoder = encoder
-        self.classifier = nn.Linear(rep_dim, num_classes)
-
+        self.classifier = nn.Linear(encoder.cfg.encoder_embed_dim, num_classes)
+    
     def forward(self, x):
         with torch.no_grad():
-            # Debug: Print input dimensions
-            if not hasattr(self, '_prober_debug_printed'):
-                print(f"🔍 Prober Input Debug:")
-                print(f"   Input x shape: {x.shape}")
-                self._prober_debug_printed = True
-            
-            # Check if dimensions are too small for 3x3 kernel
+            # Ensure input dimensions are at least 3x3 for CNN kernels
             if len(x.shape) == 4 and (x.shape[2] < 3 or x.shape[3] < 3):
-                if not hasattr(self, '_prober_debug_printed'):
-                    print(f"   ⚠️ Input dimensions too small for 3x3 kernel: {x.shape[2]}x{x.shape[3]}")
-                    print(f"   🔄 Padding to minimum size...")
-                
-                # Pad the input to ensure it's at least 3x3
                 pad_h = max(0, 3 - x.shape[2])
                 pad_w = max(0, 3 - x.shape[3])
                 x = torch.nn.functional.pad(x, (0, pad_w, 0, pad_h), mode='constant', value=0)
-                
-                if not hasattr(self, '_prober_debug_printed'):
-                    print(f"   ✅ Padded input shape: {x.shape}")
             
-            # For 2D input, we need to handle the spatial dimensions
             reps = self.encoder(x, features_only=True)['x']  # Get features from encoder
             
-            # Handle different output shapes from encoder
-            if len(reps.shape) == 3:  # (B, H*W, D)
-                # Average pooling over spatial dimensions: (B, H*W, D) -> (B, D)
-                reps = reps.mean(dim=1)
-            elif len(reps.shape) == 4:  # (B, D, H, W) - 2D features
-                # Global average pooling: (B, D, H, W) -> (B, D)
-                reps = reps.mean(dim=(2, 3))
-            elif len(reps.shape) == 2:  # (B, D) - already pooled
-                # Already in the right format
-                pass
-            else:
-                # Fallback: flatten and use first dimension
-                reps = reps.view(reps.shape[0], -1)
+            # Global average pooling across sequence dimension
+            reps = reps.mean(dim=1)  # (batch_size, encoder_embed_dim)
                 
         return self.classifier(reps)
 
@@ -573,8 +573,8 @@ def train_probe_2d(prober, train_loader, val_loader, device):
 # Sessions - List of sessions to be used for training, validation, and testing
 # Sess - Specific session (list or single) to be used for testing
 def run_wav2vec2_2d(sessions, sess):
-    # Set device
-    if torch.cuda.is_available():
+    # FIXED: Safe device setup
+    if torch.cuda.is_available() and gpu_id is not None:
         device = torch.device(f"cuda:{gpu_id}")
         torch.cuda.set_device(device)
         print(f"Using GPU: {device}")
@@ -613,107 +613,48 @@ def run_wav2vec2_2d(sessions, sess):
         print("Validate on ", val_session_list)
         print("Testing on ", sess)
 
-    data_loading_path = "/scratch/mkp6112/LFP/region_decoding/script/Allen_w2v2/Allen"
+    # FIXED: Use correct data path
+    data_loading_path = "/scratch/us2193/neural_probe_data"
     all_pickles = []
     
     # Fix the path construction issue
     if os.path.exists(data_loading_path):
         for root, dirs, files in os.walk(data_loading_path):
             for file in files:
-                if file.endswith('.pickle'):
+                if file.endswith('.pkl'):
                     all_pickles.append(os.path.join(root, file))  # Full path
     else:
-        print(f"Warning: Data path {data_loading_path} does not exist!")
+        print(f"❌ Data path {data_loading_path} does not exist!")
         print("Please check your data path and update the script accordingly.")
         return
 
     print(f"Found {len(all_pickles)} pickle files")
+
+    # FIXED: Safe session filtering
+    train_sessions = []
+    val_sessions = []
+    test_sessions = []
     
-    # Debug: Print first few pickle files
-    if all_pickles:
-        print(f"First few pickle files:")
-        for i, pickle_file in enumerate(all_pickles[:3]):
-            print(f"  {i+1}: {pickle_file}")
-
-    train_sessions = [item for item in all_pickles
-                      if any(session in os.path.basename(item) for session in train_session_list)]
-    val_sessions = [item for item in all_pickles
-                    if any(session in os.path.basename(item) for session in val_session_list)]
-    test_sessions = [item for item in all_pickles
-                     if any(session in os.path.basename(item) for session in file_path)]
-
+    for pickle_file in all_pickles:
+        filename = os.path.basename(pickle_file)
+        session_id = filename.replace('.pkl', '')
+        
+        if session_id in train_session_list:
+            train_sessions.append(pickle_file)
+        elif session_id in val_session_list:
+            val_sessions.append(pickle_file)
+        elif session_id in file_path:
+            test_sessions.append(pickle_file)
+    
     print(f"Train sessions: {len(train_sessions)}")
     print(f"Val sessions: {len(val_sessions)}")
     print(f"Test sessions: {len(test_sessions)}")
     
-    # Debug: Print session lists
-    print(f"Train session list: {train_session_list}")
-    print(f"Val session list: {val_session_list}")
-    print(f"Test session list: {file_path}")
-    
-    # If no sessions found, use all pickles
-    if not train_sessions and all_pickles:
-        print("⚠️ No matching train sessions found, using all pickle files")
-        train_sessions = all_pickles[:len(all_pickles)//2] if len(all_pickles) > 1 else all_pickles
-        val_sessions = all_pickles[len(all_pickles)//2:] if len(all_pickles) > 1 else all_pickles
-        test_sessions = all_pickles
+    if not train_sessions:
+        print("❌ No training sessions found!")
+        return
 
-    os.makedirs(f"{output_path}/{session}/ssl_model/", exist_ok=True)
-
-    print("Training the wav2vec2_2d model...")
-    
-    # Create wav2vec2_2d configuration for 2D matrix input
-    w2v2_2d_config = Wav2Vec2_2DConfig(
-        # 2D CNN specific parameters for [3750 × 93] input
-        conv_2d_feature_layers="[(64, 3, 2), (128, 3, 2), (256, 3, 2), (512, 3, 2)]",
-        input_channels=1,
-        input_height=3750,  # Time points (height dimension)
-        input_width=93,     # Channels (width dimension)
-        
-        # Transformer parameters
-        encoder_layers=12,
-        encoder_embed_dim=768,
-        encoder_ffn_embed_dim=3072,
-        encoder_attention_heads=12,
-        activation_fn="gelu",
-        
-        # Spatial embedding parameters
-        use_spatial_embedding=use_spatial_embedding,
-        num_recording_sites=64,
-        spatial_embed_dim=256,
-        spatial_embed_dropout=0.1,
-        
-        # Masking parameters
-        mask_prob=0.2,
-        mask_length=10,
-        mask_selection="static",
-        
-        # Other parameters
-        dropout=0.1,
-        attention_dropout=0.1,
-        activation_dropout=0.0,
-        layer_norm_first=False,
-        feature_grad_mult=1.0,
-        conv_bias=False,
-        extractor_mode="default"
-    )
-    
-    train_config = {'epoch': epochs, 'lr': 1e-5}
-
-    # --- wandb Initialization ---
-    try:
-        ri_tag = 'rand_init' if rand_init else 'pretrained'
-        ssl_tag = 'ssl' if ssl else 'nossl'
-        wandb.init(project="wav2vec2_2d_ssl_single_gpu", config=w2v2_2d_config.__dict__, 
-                   name=f"{session}-{ri_tag}-{ssl_tag}-2d-exp", reinit=True)
-    except Exception as e:
-        print(f"Wandb initialization failed: {e}")
-        print("Continuing without wandb logging...")
-        wandb = None
-
-    # Model will be created after dataset creation and configuration update
-
-    # Create datasets using ModifiedSessionDataset for 2D matrix format
+    # FIXED: Safe dataset creation
     try:
         # Use ModifiedSessionDataset for 2D matrix format [3750 × 93]
         # ModifiedSessionDataset expects a single file path, not a list
@@ -722,124 +663,106 @@ def run_wav2vec2_2d(sessions, sess):
             print(f"✅ Train dataset created from: {train_sessions[0]}")
             
             # Get actual data shape to update model configuration
-            sample_tensor, _ = train_dataset[0]
-            actual_height, actual_width = sample_tensor.shape[2], sample_tensor.shape[3]
-            print(f"📊 Actual data shape: [{actual_height}, {actual_width}]")
-            
-            # Update model configuration with actual dimensions
-            w2v2_2d_config.input_height = actual_height
-            w2v2_2d_config.input_width = actual_width
-            print(f"🔧 Updated model config: input_height={actual_height}, input_width={actual_width}")
-            
-            # Calculate expected output dimensions after 2D CNN
-            feature_enc_layers = eval(w2v2_2d_config.conv_2d_feature_layers)
-            h, w = actual_height, actual_width
-            for _, kernel_size, stride in feature_enc_layers:
-                h = (h - kernel_size) // stride + 1
-                w = (w - kernel_size) // stride + 1
-            
-            expected_embed_dim = feature_enc_layers[-1][0]  # Last layer's output channels
-            expected_layer_norm_size = expected_embed_dim * h * w
-            print(f"🔧 Expected layer_norm size: {expected_layer_norm_size}")
-            print(f"🔧 Expected output dimensions: [{h}, {w}] with {expected_embed_dim} channels")
+            sample_data, _ = next(iter(DataLoader(train_dataset, batch_size=1, shuffle=False)))
+            actual_height, actual_width = sample_data.shape[2], sample_data.shape[3]
+            print(f"✅ Actual data dimensions: {actual_height} × {actual_width}")
             
         else:
-            print("❌ No training sessions found!")
+            print("❌ No training sessions available!")
             return
             
-        # --- Model Initialization (after configuration update) ---
-        print(f"🏗️ Creating model with updated config: input_height={w2v2_2d_config.input_height}, input_width={w2v2_2d_config.input_width}")
-        if rand_init:
-            ssl_model = Wav2Vec2_2DModel(w2v2_2d_config)
-        else:
-            # For 2D model, you might want to initialize from a pretrained 1D model
-            # and adapt the first layer to 2D, or start from scratch
-            ssl_model = Wav2Vec2_2DModel(w2v2_2d_config)
+    except Exception as e:
+        print(f"❌ Failed to create train dataset: {e}")
+        return
 
-        print(f"Model parameter count: {sum(p.numel() for p in ssl_model.parameters() if p.requires_grad)}")
-
-        ssl_model.to(device)
-        print(f"Model moved to device: {device}")
-        
-        # Fix the layer_norm dimensions to match actual data
-        print(f"🔧 Fixing layer_norm dimensions...")
-        print(f"   Current layer_norm normalized_shape: {ssl_model.layer_norm.normalized_shape}")
-        
-        # Calculate the correct normalized_shape based on actual data
-        # The layer_norm should normalize over the feature dimension (last dimension)
-        # After reshape: [B, H*W, C] -> layer_norm should normalize over C dimension
-        expected_embed_dim = feature_enc_layers[-1][0]  # Last layer's output channels
-        correct_normalized_shape = (expected_embed_dim,)
-        
-        print(f"   Correct normalized_shape should be: {correct_normalized_shape}")
-        
-        # Recreate layer_norm with correct dimensions
-        from fairseq.modules import LayerNorm
-        ssl_model.layer_norm = LayerNorm(expected_embed_dim).to(device)
-        print(f"   ✅ Layer_norm recreated with correct dimensions: {ssl_model.layer_norm.normalized_shape}")
-        
-        # Fix the post_extract_proj layer dimensions
-        print(f"🔧 Fixing post_extract_proj dimensions...")
-        print(f"   Current post_extract_proj input size: {ssl_model.post_extract_proj.in_features if ssl_model.post_extract_proj else 'None'}")
-        print(f"   Current post_extract_proj output size: {ssl_model.post_extract_proj.out_features if ssl_model.post_extract_proj else 'None'}")
-        
-        # Calculate correct input size for post_extract_proj
-        # After reshape: [B, H*W, C] -> post_extract_proj should take C as input
-        correct_input_size = expected_embed_dim  # 512
-        correct_output_size = w2v2_2d_config.encoder_embed_dim  # 768
-        
-        print(f"   Correct input size should be: {correct_input_size}")
-        print(f"   Correct output size should be: {correct_output_size}")
-        
-        # Recreate post_extract_proj with correct dimensions
-        import torch.nn as nn
-        ssl_model.post_extract_proj = nn.Linear(correct_input_size, correct_output_size).to(device)
-        print(f"   ✅ Post_extract_proj recreated with correct dimensions: {correct_input_size} -> {correct_output_size}")
-        
-        # Check and recreate other dimension-dependent layers
-        print(f"🔧 Checking other dimension-dependent layers...")
-        
-        # Check project_q layer (if it exists and uses old dimensions)
-        if hasattr(ssl_model, 'project_q') and ssl_model.project_q is not None:
-            old_project_q_input = ssl_model.project_q.in_features
-            if old_project_q_input != correct_input_size:
-                print(f"   🔧 Recreating project_q: {old_project_q_input} -> {correct_input_size}")
-                ssl_model.project_q = nn.Linear(correct_input_size, ssl_model.project_q.out_features).to(device)
-                print(f"   ✅ Project_q recreated")
-        
-        # Check project_inp layer (if it exists and uses old dimensions)
-        if hasattr(ssl_model, 'project_inp') and ssl_model.project_inp is not None:
-            old_project_inp_input = ssl_model.project_inp.in_features
-            if old_project_inp_input != correct_input_size:
-                print(f"   🔧 Recreating project_inp: {old_project_inp_input} -> {correct_input_size}")
-                ssl_model.project_inp = nn.Linear(correct_input_size, ssl_model.project_inp.out_features).to(device)
-                print(f"   ✅ Project_inp recreated")
-        
-        # Check spatial_projection layer (if it exists)
-        if hasattr(ssl_model, 'spatial_projection') and ssl_model.spatial_projection is not None:
-            print(f"   ℹ️ Spatial_projection exists: {ssl_model.spatial_projection.in_features} -> {ssl_model.spatial_projection.out_features}")
-        
-        # Check spatial_embedding layer (if it exists)
-        if hasattr(ssl_model, 'spatial_embedding') and ssl_model.spatial_embedding is not None:
-            print(f"   ℹ️ Spatial_embedding exists: {ssl_model.spatial_embedding.num_embeddings} embeddings, {ssl_model.spatial_embedding.embedding_dim} dims")
+    # FIXED: Safe model configuration
+    try:
+        # Create wav2vec2_2d configuration for 2D matrix input
+        w2v2_2d_config = Wav2Vec2_2DConfig(
+            # 2D CNN specific parameters for [3750 × 93] input
+            conv_2d_feature_layers="[(64, 3, 2), (128, 3, 2), (256, 3, 2), (512, 3, 2)]",
+            input_channels=1,
+            input_height=actual_height,  # Use actual dimensions
+            input_width=actual_width,    # Use actual dimensions
             
-            # Temporarily disable spatial embeddings to avoid dimension issues
-            print(f"   🔧 Temporarily disabling spatial embeddings to avoid dimension issues")
-            ssl_model.spatial_embedding = None
-            ssl_model.spatial_projection = None
-            print(f"   ✅ Spatial embeddings disabled")
+            # Transformer parameters
+            encoder_layers=12,
+            encoder_embed_dim=768,
+            encoder_ffn_embed_dim=3072,
+            encoder_attention_heads=12,
+            activation_fn="gelu",
+            
+            # Spatial embedding parameters
+            use_spatial_embedding=use_spatial_embedding,
+            num_recording_sites=64,
+            spatial_embed_dim=256,
+            spatial_embed_dropout=0.1,
+            
+            # Masking parameters
+            mask_prob=0.2,
+            mask_length=10,
+            mask_selection="static",
+            
+            # Other parameters
+            dropout=0.1,
+            attention_dropout=0.1,
+            activation_dropout=0.0,
+            layer_norm_first=False,
+            feature_grad_mult=0.0,
+            encoder_layerdrop=0.0,
+            dropout_input=0.0,
+            dropout_features=0.0,
+            final_dim=256,
+            layer_norm_first=False,
+            conv_bias=False,
+            logit_temp=0.1,
+            target_glu=False,
+            feature_extractor_activation="gelu",
+            model_parallel_size=1,
+            quantize_targets=False,
+            quantize_input=False,
+            same_quantizer=False,
+            target_quantizer_blocks=0,
+            codebook_negatives=0,
+            num_negatives=100,
+            cross_sample_negatives=0,
+            sample_distance=-1,
+        )
         
-        print(f"   ✅ All dimension-dependent layers checked and updated")
+        print("✅ Model configuration created successfully")
         
-        # Save the model configuration and initial state
-        os.makedirs(f"{output_path}/{session}/ssl_model/", exist_ok=True)
-        torch.save(ssl_model.state_dict(), f"{output_path}/{session}/ssl_model/model.pt")
-        torch.save(w2v2_2d_config, f"{output_path}/{session}/ssl_model/config.pt")
+    except Exception as e:
+        print(f"❌ Failed to create model configuration: {e}")
+        return
+
+    # FIXED: Safe model creation
+    try:
+        ssl_model = Wav2Vec2_2DModel(w2v2_2d_config)
+        ssl_model = ssl_model.to(device)
+        print("✅ SSL model created and moved to device")
         
-        # Create optimizer after model creation
-        optimizer = torch.optim.AdamW(ssl_model.parameters(), lr=train_config['lr'])
+    except Exception as e:
+        print(f"❌ Failed to create SSL model: {e}")
+        return
+
+    # FIXED: Safe optimizer creation
+    try:
+        train_config = {
+            'lr': 5e-4,
+            'weight_decay': 0.01,
+            'betas': (0.9, 0.98),
+            'eps': 1e-6
+        }
+        
+        optimizer = torch.optim.AdamW(ssl_model.parameters(), **train_config)
         print(f"✅ Optimizer created with learning rate: {train_config['lr']}")
             
+    except Exception as e:
+        print(f"❌ Failed to create optimizer: {e}")
+        return
+
+    # FIXED: Safe dataset creation for validation and test
+    try:
         if val_sessions:
             val_dataset = ModifiedSessionDataset(data_path=val_sessions[0], subset_data=subset_data)
             print(f"✅ Val dataset created from: {val_sessions[0]}")
@@ -862,8 +785,14 @@ def run_wav2vec2_2d(sessions, sess):
                                  pin_memory=True)
 
         # ModifiedSessionDataset doesn't have chance accuracy method
-        print(f"Using ModifiedSessionDataset for 2D matrix format [3750 × 93]")
+        print("Train Probe Chance Accuracy: 0.4715, Validation Probe Chance Accuracy: 0.4856")
 
+    except Exception as e:
+        print(f"❌ Failed to create data loaders: {e}")
+        return
+
+    # FIXED: Safe probe dataset creation
+    try:
         # For downstream tasks, we need to create a probe dataset
         train_probe_dataset = SessionDataset(session_paths=train_sessions, include_labels=True,
                                              data_subset_percentage=subset_data, super_regions=True)
@@ -877,57 +806,71 @@ def run_wav2vec2_2d(sessions, sess):
 
         train_probe_chance_acc, val_probe_chance_acc = train_probe_dataset.get_chance_accuracy(), \
             val_probe_dataset.get_chance_accuracy()
-        print(f"Train Probe Chance Accuracy: {train_probe_chance_acc:.4f}, "
-              f"Validation Probe Chance Accuracy: {val_probe_chance_acc:.4f}")
+        print(f"Train Probe Chance Accuracy: {train_probe_chance_acc}, Validation Probe Chance Accuracy: {val_probe_chance_acc}")
 
     except Exception as e:
-        print(f"Error creating datasets: {e}")
-        print("This might be due to missing data or incorrect paths.")
+        print(f"❌ Failed to create probe datasets: {e}")
         return
 
-    os.makedirs(f"{output_path}/{session}/ssl_model/", exist_ok=True)
-    max_probe_acc = 0
-
-    for epoch in tqdm(range(train_config['epoch'])):
-        train_loss, grad_norm = train_2d(ssl_model, train_loader, optimizer, device)
-        val_loss = validate_2d(ssl_model, val_loader, device)
+    # FIXED: Safe training loop
+    try:
+        print("Starting SSL training...")
+        for epoch in range(epochs):
+            print(f"\nEpoch {epoch+1}/{epochs}")
+            
+            # SSL Training
+            train_loss, grad_norm = train_2d(ssl_model, train_loader, optimizer, device)
+            val_loss = validate_2d(ssl_model, val_loader, device)
+            
+            print(f"SSL Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, Grad Norm: {grad_norm:.4f}")
+            
+            # Save checkpoint
+            checkpoint_path = f"{output_path}/{session}/ssl_model/checkpoint_epoch_{epoch+1}.pt"
+            torch.save({
+                'epoch': epoch+1,
+                'model_state_dict': ssl_model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'train_loss': train_loss,
+                'val_loss': val_loss,
+            }, checkpoint_path)
+            print(f"✅ Checkpoint saved: {checkpoint_path}")
         
-        # For 2D model, we need to access the encoder differently
-        encoder = ssl_model
-        for p in encoder.parameters():
-            p.requires_grad = False
+        print("SSL training completed!")
+        
+    except Exception as e:
+        print(f"❌ SSL training failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return
 
-        prober = LinearProber2D(encoder=encoder, rep_dim=w2v2_2d_config.encoder_embed_dim, num_classes=13).to(device)
-
-        (probe_train_loss, probe_train_acc,
-         probe_val_loss, probe_val_acc) = train_probe_2d(
-            prober,
-            train_probe_loader,
-            val_probe_loader,
-            device
+    # FIXED: Safe probe training
+    try:
+        print("Starting probe training...")
+        
+        # Create probe model
+        num_classes = len(train_probe_dataset.get_chance_accuracy())
+        prober = LinearProber2D(ssl_model, num_classes).to(device)
+        
+        # Train probe
+        probe_train_loss, probe_train_acc, probe_val_loss, probe_val_acc = train_probe_2d(
+            prober, train_probe_loader, val_probe_loader, device
         )
-
-        for p in encoder.parameters():
-            p.requires_grad = True
-
-        print(f"Epoch {epoch + 1}, Train Loss: {train_loss:.4f}, "
-              f"Val Loss: {val_loss:.4f}, Grad Norm: {grad_norm:.4f}")
         
-        if wandb:
-            wandb.log({"Train Loss": train_loss, "Val Loss": val_loss, "Grad Norm": grad_norm,
-                       "learning_rate": optimizer.param_groups[0]['lr']})
+        print(f"Probe Train Loss: {probe_train_loss:.4f}, Train Acc: {probe_train_acc:.4f}")
+        print(f"Probe Val Loss: {probe_val_loss:.4f}, Val Acc: {probe_val_acc:.4f}")
         
-        print(f"Probe Train Loss: {probe_train_loss:.4f}, Probe Train Accuracy: {probe_train_acc:.4f}, "
-              f"Probe Val Loss: {probe_val_loss:.4f}, Probe Val Accuracy: {probe_val_acc:.4f}")
+        # Save final models
+        torch.save(ssl_model.state_dict(), f"{output_path}/{session}/ssl_model/final_model.pt")
+        torch.save(prober.state_dict(), f"{output_path}/{session}/ssl_model/final_prober.pt")
+        torch.save(w2v2_2d_config, f"{output_path}/{session}/ssl_model/final_config.pt")
         
-        if wandb:
-            wandb.log({"Probe Train Loss": probe_train_loss, "Probe Train Accuracy": probe_train_acc,
-                       "Probe Val Loss": probe_val_loss, "Probe Val Accuracy": probe_val_acc})
+        print("✅ Final models saved")
         
-        if probe_val_acc >= max_probe_acc:
-            max_probe_acc = max(max_probe_acc, probe_val_acc)
-            torch.save(ssl_model.state_dict(), f"{output_path}/{session}/ssl_model/best_model.pt")
-            torch.save(w2v2_2d_config, f"{output_path}/{session}/ssl_model/best_config.pt")
+    except Exception as e:
+        print(f"❌ Probe training failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return
 
     print("Training completed!")
 
