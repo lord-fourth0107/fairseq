@@ -219,6 +219,14 @@ def train_2d(model, data_loader, optimizer, device):
                     test_features = test_output.permute(0, 2, 3, 1).reshape(B, H * W, C)
                     print(f"✅ Reshaped features shape: {test_features.shape}")
                     print(f"✅ Expected layer_norm input shape: [*, {test_features.shape[-1]}]")
+                    print(f"✅ Actual layer_norm normalized_shape: {model.layer_norm.normalized_shape}")
+                    
+                    # Test layer_norm with correct dimensions
+                    try:
+                        test_layer_norm_output = model.layer_norm(test_features)
+                        print(f"✅ Layer_norm test successful! Output shape: {test_layer_norm_output.shape}")
+                    except Exception as e:
+                        print(f"❌ Layer_norm test failed: {e}")
                     
             except Exception as e:
                 print(f"❌ Error in test forward pass: {e}")
@@ -578,6 +586,23 @@ def run_wav2vec2_2d(sessions, sess):
 
         ssl_model.to(device)
         print(f"Model moved to device: {device}")
+        
+        # Fix the layer_norm dimensions to match actual data
+        print(f"🔧 Fixing layer_norm dimensions...")
+        print(f"   Current layer_norm normalized_shape: {ssl_model.layer_norm.normalized_shape}")
+        
+        # Calculate the correct normalized_shape based on actual data
+        # The layer_norm should normalize over the feature dimension (last dimension)
+        # After reshape: [B, H*W, C] -> layer_norm should normalize over C dimension
+        expected_embed_dim = feature_enc_layers[-1][0]  # Last layer's output channels
+        correct_normalized_shape = (expected_embed_dim,)
+        
+        print(f"   Correct normalized_shape should be: {correct_normalized_shape}")
+        
+        # Recreate layer_norm with correct dimensions
+        from fairseq.modules import LayerNorm
+        ssl_model.layer_norm = LayerNorm(expected_embed_dim).to(device)
+        print(f"   ✅ Layer_norm recreated with correct dimensions: {ssl_model.layer_norm.normalized_shape}")
         
         # Save the model configuration and initial state
         os.makedirs(f"{output_path}/{session}/ssl_model/", exist_ok=True)

@@ -91,10 +91,17 @@ celerybeat-schedule
 # dotenv
 .env
 
-# virtualenv
-.venv
+# Virtual environments
+.venv/
 venv/
 ENV/
+env/
+.env/
+wav2vec2_env_py39/
+*_env/
+*_venv/
+*env*/
+*venv*/
 
 # Spyder project settings
 .spyderproject
