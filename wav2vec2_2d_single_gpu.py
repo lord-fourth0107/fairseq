@@ -448,50 +448,73 @@ class LinearProber2D(nn.Module):
                 print(f"   Input x shape: {x.shape}")
                 self._prober_debug_printed = True
             
+            # Print shape at every step
+            print(f"📊 Prober Forward Pass - Step by Step:")
+            print(f"   1. Input x: {x.shape}")
+            
             # Check if dimensions are too small for 3x3 kernel
             if len(x.shape) == 4 and (x.shape[2] < 3 or x.shape[3] < 3):
-                if not hasattr(self, '_prober_debug_printed'):
-                    print(f"   ⚠️ Input dimensions too small for 3x3 kernel: {x.shape[2]}x{x.shape[3]}")
-                    print(f"   🔄 Padding to minimum size...")
+                print(f"   ⚠️ Input dimensions too small for 3x3 kernel: {x.shape[2]}x{x.shape[3]}")
+                print(f"   🔄 Padding to minimum size...")
                 
                 # Pad the input to ensure it's at least 3x3
                 pad_h = max(0, 3 - x.shape[2])
                 pad_w = max(0, 3 - x.shape[3])
                 x = torch.nn.functional.pad(x, (0, pad_w, 0, pad_h), mode='constant', value=0)
                 
-                if not hasattr(self, '_prober_debug_printed'):
-                    print(f"   ✅ Padded input shape: {x.shape}")
+                print(f"   2. After padding: {x.shape}")
+            else:
+                print(f"   2. No padding needed: {x.shape}")
             
             # For 2D input, we need to handle the spatial dimensions
             try:
+                print(f"   3. Calling encoder with x: {x.shape}")
                 reps = self.encoder(x, features_only=True)['x']  # Get features from encoder
+                print(f"   4. Encoder output reps: {reps.shape}")
                 
                 # Handle different output shapes from encoder
                 if len(reps.shape) == 3:  # (B, H*W, D)
+                    print(f"   5. 3D output detected, pooling over dim=1")
                     # Average pooling over spatial dimensions: (B, H*W, D) -> (B, D)
                     reps = reps.mean(dim=1)
+                    print(f"   6. After pooling: {reps.shape}")
                 elif len(reps.shape) == 4:  # (B, D, H, W) - 2D features
+                    print(f"   5. 4D output detected, global average pooling")
                     # Global average pooling: (B, D, H, W) -> (B, D)
                     reps = reps.mean(dim=(2, 3))
+                    print(f"   6. After pooling: {reps.shape}")
                 elif len(reps.shape) == 2:  # (B, D) - already pooled
+                    print(f"   5. 2D output detected, already pooled: {reps.shape}")
                     # Already in the right format
                     pass
                 else:
+                    print(f"   5. Unknown output shape {reps.shape}, flattening")
                     # Fallback: flatten and use first dimension
                     reps = reps.view(reps.shape[0], -1)
+                    print(f"   6. After flattening: {reps.shape}")
                 
                 # Ensure we return the same batch size as input
                 if reps.shape[0] != x.shape[0]:
-                    print(f"⚠️ Prober output batch size mismatch: input {x.shape[0]} vs output {reps.shape[0]}")
+                    print(f"   ⚠️ Batch size mismatch: input {x.shape[0]} vs output {reps.shape[0]}")
+                    print(f"   🔄 Repeating output to match input batch size...")
                     # Repeat the output to match input batch size
                     reps = reps.repeat(x.shape[0], 1)
+                    print(f"   7. After batch size fix: {reps.shape}")
+                else:
+                    print(f"   7. Batch sizes match: {reps.shape}")
                     
             except Exception as e:
                 print(f"❌ Prober forward pass failed: {e}")
+                import traceback
+                traceback.print_exc()
                 # Return zero logits with correct batch size
                 return torch.zeros(x.shape[0], self.classifier.out_features, device=x.device)
+            
+            print(f"   8. Final reps before classifier: {reps.shape}")
+            result = self.classifier(reps)
+            print(f"   9. Final classifier output: {result.shape}")
                 
-        return self.classifier(reps)
+        return result
 
 
 def train_probe_2d(prober, train_loader, val_loader, device):
@@ -508,14 +531,32 @@ def train_probe_2d(prober, train_loader, val_loader, device):
         # Performance optimization: add progress indicator
         if batch_idx % 100 == 0:
             print(f"🔄 Probe training batch {batch_idx}/{len(train_loader)}")
+        
+        # Debug: Print original shapes
+        if batch_idx == 0:
+            print(f"🔍 TRAINING LOOP DEBUG:")
+            print(f"   Original xb shape: {xb.shape}")
+            print(f"   Original yb shape: {yb.shape}")
+        
         xb, yb = xb.to(device), yb.to(device)
         
         # The xb is already a 2D matrix from stacking multiple recordings
         # Reshape to (B, C, H, W) where:
         # B = 1 (single batch), C = 1 (single channel), H = num_recordings, W = time_points
+        if batch_idx == 0:
+            print(f"   Before unsqueeze: xb = {xb.shape}")
+        
         xb = xb.unsqueeze(0).unsqueeze(0)  # [1, 1, num_recordings, time_points]
+        
+        if batch_idx == 0:
+            print(f"   After unsqueeze: xb = {xb.shape}")
+            print(f"   Target yb: {yb.shape}")
+            print(f"   Calling prober with xb: {xb.shape}")
             
         logits = prober(xb)
+        
+        if batch_idx == 0:
+            print(f"   Prober returned logits: {logits.shape}")
         
         # Handle batch size mismatch between logits and targets
         if logits.shape[0] != yb.shape[0]:
@@ -562,15 +603,32 @@ def train_probe_2d(prober, train_loader, val_loader, device):
 
     prober.eval()
     with torch.no_grad():
-        for xb, yb in val_loader:
+        for val_batch_idx, (xb, yb) in enumerate(val_loader):
+            # Debug: Print original shapes for first validation batch
+            if val_batch_idx == 0:
+                print(f"🔍 VALIDATION LOOP DEBUG:")
+                print(f"   Original xb shape: {xb.shape}")
+                print(f"   Original yb shape: {yb.shape}")
+            
             xb, yb = xb.to(device), yb.to(device)
             
             # The xb is already a 2D matrix from stacking multiple recordings
             # Reshape to (B, C, H, W) where:
             # B = 1 (single batch), C = 1 (single channel), H = num_recordings, W = time_points
+            if val_batch_idx == 0:
+                print(f"   Before unsqueeze: xb = {xb.shape}")
+            
             xb = xb.unsqueeze(0).unsqueeze(0)  # [1, 1, num_recordings, time_points]
+            
+            if val_batch_idx == 0:
+                print(f"   After unsqueeze: xb = {xb.shape}")
+                print(f"   Target yb: {yb.shape}")
+                print(f"   Calling prober with xb: {xb.shape}")
                 
             logits = prober(xb)
+            
+            if val_batch_idx == 0:
+                print(f"   Prober returned logits: {logits.shape}")
             
             # Handle batch size mismatch between logits and targets
             if logits.shape[0] != yb.shape[0]:
