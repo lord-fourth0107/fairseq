@@ -134,19 +134,54 @@ def train_2d(model, data_loader, optimizer, device):
             print(f"Probe IDs: {probe_ids}")
             print(f"Input range: [{input_values.min():.6f}, {input_values.max():.6f}]")
         
-        # The input_values is already in the correct format:
-        # [batch, channels, height, width] = [1, 1, 3750, 93]
-        # Height: 3750 time points (spatial dimension)
-        # Width: 93 channels (temporal dimension)
-        batch_size, channels, height, width = input_values.shape
+        # Debug: Print actual shape first
+        if step == 0:
+            print(f"Actual input shape: {input_values.shape}")
+            print(f"Input dimensions: {len(input_values.shape)}")
+            print(f"Input range: [{input_values.min():.6f}, {input_values.max():.6f}]")
+        
+        # Handle different input shapes
+        if len(input_values.shape) == 4:
+            # Expected format: [batch, channels, height, width] = [1, 1, 3750, 93]
+            batch_size, channels, height, width = input_values.shape
+            if step == 0:
+                print(f"✅ 4D input detected: {input_values.shape}")
+                print(f"Batch size: {batch_size}, Channels: {channels}")
+                print(f"Height (time points): {height}, Width (channels): {width}")
+        elif len(input_values.shape) == 3:
+            # Possible format: [batch, height, width] = [1, 3750, 93]
+            batch_size, height, width = input_values.shape
+            channels = 1
+            input_values = input_values.unsqueeze(1)  # Add channel dimension
+            if step == 0:
+                print(f"✅ 3D input detected, adding channel dimension: {input_values.shape}")
+                print(f"Batch size: {batch_size}, Channels: {channels}")
+                print(f"Height (time points): {height}, Width (channels): {width}")
+        elif len(input_values.shape) == 2:
+            # Fallback: [batch, features] - need to reshape
+            batch_size, features = input_values.shape
+            # Assume this is a flattened version, try to reshape
+            if features == 3750 * 93:  # 348,750 features
+                input_values = input_values.view(batch_size, 1, 3750, 93)
+                batch_size, channels, height, width = input_values.shape
+                if step == 0:
+                    print(f"✅ 2D input detected, reshaping to: {input_values.shape}")
+                    print(f"Batch size: {batch_size}, Channels: {channels}")
+                    print(f"Height (time points): {height}, Width (channels): {width}")
+            else:
+                # Try to reshape as [batch, 1, features, 1] for compatibility
+                input_values = input_values.unsqueeze(1).unsqueeze(-1)
+                batch_size, channels, height, width = input_values.shape
+                if step == 0:
+                    print(f"⚠️ 2D input with {features} features, reshaping to: {input_values.shape}")
+                    print(f"Batch size: {batch_size}, Channels: {channels}")
+                    print(f"Height: {height}, Width: {width}")
+        else:
+            raise ValueError(f"Unexpected input shape: {input_values.shape}")
         
         if step == 0:
-            print(f"2D CNN input shape: {input_values.shape}")
-            print(f"Batch size: {batch_size}")
-            print(f"Channels: {channels}")
-            print(f"Height (time points): {height}")
-            print(f"Width (channels): {width}")
-            print(f"Input range: [{input_values.min():.6f}, {input_values.max():.6f}]")
+            print(f"Final input shape for 2D CNN: {input_values.shape}")
+            print(f"Final range: [{input_values.min():.6f}, {input_values.max():.6f}]")
         
         # Compute masking for 2D input
         mask_time_indices, sampled_negative_indices = compute_mask_inputs_2d(model, input_values, device)
@@ -193,9 +228,20 @@ def validate_2d(model, data_loader, device):
         for step, (input_values, probe_ids) in enumerate(data_loader):
             input_values = input_values.float().to(device)
             
-            # input_values comes as (B, C, H, W) from ModifiedSessionDataset
-            # Shape: [1, 1, 3750, 93] - already properly formatted for 2D CNN
-            # No reshaping needed - already in correct format
+            # Handle different input shapes (same as training function)
+            if len(input_values.shape) == 4:
+                # Expected format: [batch, channels, height, width]
+                pass
+            elif len(input_values.shape) == 3:
+                # Add channel dimension
+                input_values = input_values.unsqueeze(1)
+            elif len(input_values.shape) == 2:
+                # Try to reshape
+                batch_size, features = input_values.shape
+                if features == 3750 * 93:
+                    input_values = input_values.view(batch_size, 1, 3750, 93)
+                else:
+                    input_values = input_values.unsqueeze(1).unsqueeze(-1)
             
             mask_time_indices, sampled_negative_indices = compute_mask_inputs_2d(model, input_values, device)
             
@@ -350,6 +396,12 @@ def run_wav2vec2_2d(sessions, sess):
         return
 
     print(f"Found {len(all_pickles)} pickle files")
+    
+    # Debug: Print first few pickle files
+    if all_pickles:
+        print(f"First few pickle files:")
+        for i, pickle_file in enumerate(all_pickles[:3]):
+            print(f"  {i+1}: {pickle_file}")
 
     train_sessions = [item for item in all_pickles
                       if any(session in os.path.basename(item) for session in train_session_list)]
@@ -361,6 +413,18 @@ def run_wav2vec2_2d(sessions, sess):
     print(f"Train sessions: {len(train_sessions)}")
     print(f"Val sessions: {len(val_sessions)}")
     print(f"Test sessions: {len(test_sessions)}")
+    
+    # Debug: Print session lists
+    print(f"Train session list: {train_session_list}")
+    print(f"Val session list: {val_session_list}")
+    print(f"Test session list: {file_path}")
+    
+    # If no sessions found, use all pickles
+    if not train_sessions and all_pickles:
+        print("⚠️ No matching train sessions found, using all pickle files")
+        train_sessions = all_pickles[:len(all_pickles)//2] if len(all_pickles) > 1 else all_pickles
+        val_sessions = all_pickles[len(all_pickles)//2:] if len(all_pickles) > 1 else all_pickles
+        test_sessions = all_pickles
 
     os.makedirs(f"{output_path}/{session}/ssl_model/", exist_ok=True)
 
@@ -439,12 +503,27 @@ def run_wav2vec2_2d(sessions, sess):
     # Create datasets using ModifiedSessionDataset for 2D matrix format
     try:
         # Use ModifiedSessionDataset for 2D matrix format [3750 × 93]
-        train_dataset = ModifiedSessionDataset(data_path=train_sessions[0] if train_sessions else None, 
-                                             subset_data=subset_data)
-        val_dataset = ModifiedSessionDataset(data_path=val_sessions[0] if val_sessions else None, 
-                                           subset_data=subset_data)
-        test_dataset = ModifiedSessionDataset(data_path=test_sessions[0] if test_sessions else None, 
-                                            subset_data=subset_data)
+        # ModifiedSessionDataset expects a single file path, not a list
+        if train_sessions:
+            train_dataset = ModifiedSessionDataset(data_path=train_sessions[0], subset_data=subset_data)
+            print(f"✅ Train dataset created from: {train_sessions[0]}")
+        else:
+            print("❌ No training sessions found!")
+            return
+            
+        if val_sessions:
+            val_dataset = ModifiedSessionDataset(data_path=val_sessions[0], subset_data=subset_data)
+            print(f"✅ Val dataset created from: {val_sessions[0]}")
+        else:
+            val_dataset = train_dataset  # Use train dataset as fallback
+            print("⚠️ No validation sessions, using train dataset")
+            
+        if test_sessions:
+            test_dataset = ModifiedSessionDataset(data_path=test_sessions[0], subset_data=subset_data)
+            print(f"✅ Test dataset created from: {test_sessions[0]}")
+        else:
+            test_dataset = train_dataset  # Use train dataset as fallback
+            print("⚠️ No test sessions, using train dataset")
         
         train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True, num_workers=num_workers,
                                   pin_memory=True)
