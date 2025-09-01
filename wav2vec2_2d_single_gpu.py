@@ -90,25 +90,49 @@ def compute_mask_inputs_2d(model, input_values, device):
     """
     batch_size, channels, height, width = input_values.shape
     with torch.no_grad():
-        # For 2D input, we need to compute the sequence length after CNN
-        # This is a simplified approach - you may need to adjust based on your CNN architecture
-        seq_len = height * width  # Simplified: H * W
+        # Get the actual sequence length after CNN processing
+        # We need to run the feature extractor to get the correct sequence length
+        try:
+            features = model.feature_extractor(input_values)
+            B, C, H_out, W_out = features.shape
+            
+            # Reshape to sequence format: (B, H*W, C)
+            features_reshaped = features.permute(0, 2, 3, 1).reshape(B, H_out * W_out, C)
+            actual_seq_len = features_reshaped.shape[1]  # This is the correct sequence length
+            
+        except Exception as e:
+            # Fallback: use a reasonable default sequence length
+            print(f"⚠️ Feature extractor failed, using fallback sequence length: {e}")
+            # Use a conservative estimate based on input dimensions
+            actual_seq_len = min(height * width // 4, 1000)  # Conservative estimate
+            print(f"   Using fallback sequence length: {actual_seq_len}")
         
-        # Compute masking for the flattened sequence
-        mask_time_indices = torch.randint(0, seq_len, (batch_size, seq_len), device=device)
+        # Compute masking for the actual sequence length
         mask_prob = 0.2  # You can make this configurable
         mask_length = 10
         
-        # Create random masks
-        mask = torch.rand(batch_size, seq_len, device=device) < mask_prob
+        # Create random masks with correct sequence length
+        mask = torch.rand(batch_size, actual_seq_len, device=device) < mask_prob
         mask_time_indices = mask
+        
+        # Debug: Print masking information (only for first call)
+        if not hasattr(compute_mask_inputs_2d, '_debug_printed'):
+            print(f"🔍 Masking Debug:")
+            print(f"   Input shape: {input_values.shape}")
+            print(f"   Feature extractor output: {features.shape}")
+            print(f"   Reshaped features: {features_reshaped.shape}")
+            print(f"   Actual sequence length: {actual_seq_len}")
+            print(f"   Mask shape: {mask_time_indices.shape}")
+            print(f"   Masked tokens per sequence: {mask_time_indices.sum(dim=1)}")
+            compute_mask_inputs_2d._debug_printed = True
         
         # Ensure at least some tokens are masked
         if mask_time_indices.sum() == 0:
             # Randomly mask at least one token per sequence
             for i in range(batch_size):
-                idx = torch.randint(0, seq_len, (1,))
+                idx = torch.randint(0, actual_seq_len, (1,))
                 mask_time_indices[i, idx] = True
+            print(f"   ⚠️ No tokens masked, added at least one per sequence")
         
         # For 2D, we don't use sampled_negatives in the same way
         # You might need to implement a different negative sampling strategy
@@ -329,12 +353,31 @@ def validate_2d(model, data_loader, device):
                 # Add channel dimension
                 input_values = input_values.unsqueeze(1)
             elif len(input_values.shape) == 2:
-                # Try to reshape
+                # Try to reshape - use dynamic approach instead of hardcoded dimensions
                 batch_size, features = input_values.shape
-                if features == 3750 * 93:
-                    input_values = input_values.view(batch_size, 1, 3750, 93)
-                else:
-                    input_values = input_values.unsqueeze(1).unsqueeze(-1)
+                # Try common channel counts: 77, 93, or other multiples
+                possible_channels = [77, 93, 64, 128, 256]
+                reshaped = False
+                
+                for channels in possible_channels:
+                    if features == 3750 * channels:
+                        input_values = input_values.view(batch_size, 1, 3750, channels)
+                        reshaped = True
+                        if step == 0:
+                            print(f"✅ Reshaped 2D input to: {input_values.shape} (channels: {channels})")
+                        break
+                
+                if not reshaped:
+                    # Fallback: try to infer dimensions
+                    if features % 3750 == 0:
+                        inferred_channels = features // 3750
+                        input_values = input_values.view(batch_size, 1, 3750, inferred_channels)
+                        if step == 0:
+                            print(f"✅ Inferred and reshaped 2D input to: {input_values.shape} (channels: {inferred_channels})")
+                    else:
+                        input_values = input_values.unsqueeze(1).unsqueeze(-1)
+                        if step == 0:
+                            print(f"⚠️ Could not infer 2D shape, using fallback: {input_values.shape}")
             
             mask_time_indices, sampled_negative_indices = compute_mask_inputs_2d(model, input_values, device)
             
@@ -375,8 +418,21 @@ class LinearProber2D(nn.Module):
         with torch.no_grad():
             # For 2D input, we need to handle the spatial dimensions
             reps = self.encoder(x, features_only=True)['x']  # Get features from encoder
-            # Average pooling over spatial dimensions: (B, H*W, D) -> (B, D)
-            reps = reps.mean(dim=1)
+            
+            # Handle different output shapes from encoder
+            if len(reps.shape) == 3:  # (B, H*W, D)
+                # Average pooling over spatial dimensions: (B, H*W, D) -> (B, D)
+                reps = reps.mean(dim=1)
+            elif len(reps.shape) == 4:  # (B, D, H, W) - 2D features
+                # Global average pooling: (B, D, H, W) -> (B, D)
+                reps = reps.mean(dim=(2, 3))
+            elif len(reps.shape) == 2:  # (B, D) - already pooled
+                # Already in the right format
+                pass
+            else:
+                # Fallback: flatten and use first dimension
+                reps = reps.view(reps.shape[0], -1)
+                
         return self.classifier(reps)
 
 
