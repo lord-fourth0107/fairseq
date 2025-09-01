@@ -613,8 +613,8 @@ def run_wav2vec2_2d(sessions, sess):
         print("Validate on ", val_session_list)
         print("Testing on ", sess)
 
-    # FIXED: Use correct data path
-    data_loading_path = "/scratch/us2193/neural_probe_data"
+    # FIXED: Use your actual data path
+    data_loading_path = "/scratch/mkp6112/LFP/region_decoding/script/Allen_w2v2/Allen"
     all_pickles = []
     
     # Fix the path construction issue

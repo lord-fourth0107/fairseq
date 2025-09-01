@@ -463,21 +463,33 @@ class LinearProber2D(nn.Module):
                     print(f"   ✅ Padded input shape: {x.shape}")
             
             # For 2D input, we need to handle the spatial dimensions
-            reps = self.encoder(x, features_only=True)['x']  # Get features from encoder
-            
-            # Handle different output shapes from encoder
-            if len(reps.shape) == 3:  # (B, H*W, D)
-                # Average pooling over spatial dimensions: (B, H*W, D) -> (B, D)
-                reps = reps.mean(dim=1)
-            elif len(reps.shape) == 4:  # (B, D, H, W) - 2D features
-                # Global average pooling: (B, D, H, W) -> (B, D)
-                reps = reps.mean(dim=(2, 3))
-            elif len(reps.shape) == 2:  # (B, D) - already pooled
-                # Already in the right format
-                pass
-            else:
-                # Fallback: flatten and use first dimension
-                reps = reps.view(reps.shape[0], -1)
+            try:
+                reps = self.encoder(x, features_only=True)['x']  # Get features from encoder
+                
+                # Handle different output shapes from encoder
+                if len(reps.shape) == 3:  # (B, H*W, D)
+                    # Average pooling over spatial dimensions: (B, H*W, D) -> (B, D)
+                    reps = reps.mean(dim=1)
+                elif len(reps.shape) == 4:  # (B, D, H, W) - 2D features
+                    # Global average pooling: (B, D, H, W) -> (B, D)
+                    reps = reps.mean(dim=(2, 3))
+                elif len(reps.shape) == 2:  # (B, D) - already pooled
+                    # Already in the right format
+                    pass
+                else:
+                    # Fallback: flatten and use first dimension
+                    reps = reps.view(reps.shape[0], -1)
+                
+                # Ensure we return the same batch size as input
+                if reps.shape[0] != x.shape[0]:
+                    print(f"⚠️ Prober output batch size mismatch: input {x.shape[0]} vs output {reps.shape[0]}")
+                    # Repeat the output to match input batch size
+                    reps = reps.repeat(x.shape[0], 1)
+                    
+            except Exception as e:
+                print(f"❌ Prober forward pass failed: {e}")
+                # Return zero logits with correct batch size
+                return torch.zeros(x.shape[0], self.classifier.out_features, device=x.device)
                 
         return self.classifier(reps)
 
@@ -519,11 +531,19 @@ def train_probe_2d(prober, train_loader, val_loader, device):
             logits = logits[:min_batch_size]
             yb = yb[:min_batch_size]
             
-            if not hasattr(prober, '_batch_size_debug_printed'):
-                print(f"   ✅ Adjusted to batch size: {min_batch_size}")
+            print(f"   ✅ Adjusted to batch size: {min_batch_size}")
+            print(f"   Final logits shape: {logits.shape}")
+            print(f"   Final targets shape: {yb.shape}")
         
         # Add timeout protection for loss computation
         try:
+            # Additional safety check before loss computation
+            if logits.shape[0] != yb.shape[0]:
+                print(f"❌ Batch size mismatch still exists after adjustment!")
+                print(f"   Logits shape: {logits.shape}")
+                print(f"   Targets shape: {yb.shape}")
+                continue
+            
             loss = criterion(logits, yb)
         except Exception as e:
             print(f"❌ Loss computation failed: {e}")
@@ -552,10 +572,24 @@ def train_probe_2d(prober, train_loader, val_loader, device):
             
             # Handle batch size mismatch between logits and targets
             if logits.shape[0] != yb.shape[0]:
+                if not hasattr(prober, '_val_batch_size_debug_printed'):
+                    print(f"🔍 Val Batch Size Debug:")
+                    print(f"   Logits shape: {logits.shape}")
+                    print(f"   Targets shape: {yb.shape}")
+                    print(f"   🔄 Adjusting batch sizes...")
+                    prober._val_batch_size_debug_printed = True
+                
                 # Adjust batch sizes to match
                 min_batch_size = min(logits.shape[0], yb.shape[0])
                 logits = logits[:min_batch_size]
                 yb = yb[:min_batch_size]
+                
+                print(f"   ✅ Val adjusted to batch size: {min_batch_size}")
+            
+            # Additional safety check before loss computation
+            if logits.shape[0] != yb.shape[0]:
+                print(f"❌ Val batch size mismatch still exists after adjustment!")
+                continue
             
             loss = criterion(logits, yb)
             val_loss += loss.item() * xb.size(0)

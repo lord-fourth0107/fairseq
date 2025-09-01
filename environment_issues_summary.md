@@ -12,19 +12,19 @@
 
 **Fix**: Added safe GPU ID handling with fallbacks
 
-### **2. 📁 Data Path Mismatch**
-**Problem**: Script has hardcoded path:
+### **2. 📁 Data Path Access** ⚠️ **POTENTIAL ISSUE**
+**Problem**: Your data path is correct:
 ```python
 data_loading_path = "/scratch/mkp6112/LFP/region_decoding/script/Allen_w2v2/Allen"
 ```
-But your data is at:
-```python
-data_loading_path = "/scratch/us2193/neural_probe_data"
-```
+But there might be:
+- Permission issues accessing the path
+- Path structure problems
+- Missing pickle files
 
-**Impact**: Script can't find data files, crashes during dataset creation
+**Impact**: Script might not find data files or have access issues
 
-**Fix**: Updated to use correct path with fallback handling
+**Fix**: Added path validation and error handling
 
 ### **3. 🚫 Missing Error Handling**
 **Problem**: Script lacks comprehensive error handling for:
@@ -110,21 +110,15 @@ output_path = f"/vast/us2193/ssl_output/{data}/{data_type}/wav2vec2_2d/across_se
 
 ## 🎯 **MOST LIKELY CAUSE OF JOB TERMINATION:**
 
-**Data Path Issue** - The script was looking for data at:
-```
-/scratch/mkp6112/LFP/region_decoding/script/Allen_w2v2/Allen
-```
+**Environment Issues** - The script has several potential failure points:
 
-But your data is at:
-```
-/scratch/us2193/neural_probe_data
-```
+1. **GPU ID Configuration** - Invalid GPU access
+2. **Missing Error Handling** - Any failure causes immediate crash
+3. **Import Dependencies** - Missing modules cause import failures
+4. **Memory Management** - Potential memory leaks or OOM errors
+5. **Infinite Loops** - Training gets stuck without progress indicators
 
-This would cause the script to:
-1. Not find any pickle files
-2. Create empty datasets
-3. Crash during training loop
-4. Get killed by SLURM
+The script would crash at any of these points and get killed by SLURM.
 
 ## 🚀 **RECOMMENDED NEXT STEPS:**
 

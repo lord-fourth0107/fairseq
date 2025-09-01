@@ -75,26 +75,25 @@ def diagnose_environment_issues():
     
     # Check the hardcoded path from your script
     data_loading_path = "/scratch/mkp6112/LFP/region_decoding/script/Allen_w2v2/Allen"
-    print(f"   Hardcoded path: {data_loading_path}")
+    print(f"   Your data path: {data_loading_path}")
     
     if os.path.exists(data_loading_path):
-        print("   ✅ Hardcoded path exists")
-    else:
-        print("   ❌ Hardcoded path does not exist")
-        issues_found.append("Hardcoded data path does not exist")
-    
-    # Check the correct path
-    correct_data_path = "/scratch/us2193/neural_probe_data"
-    print(f"   Correct path: {correct_data_path}")
-    
-    if os.path.exists(correct_data_path):
-        print("   ✅ Correct path exists")
+        print("   ✅ Your data path exists")
         # Count pickle files
-        pickle_files = [f for f in os.listdir(correct_data_path) if f.endswith('.pkl')]
+        pickle_files = [f for f in os.listdir(data_loading_path) if f.endswith('.pickle')]
         print(f"   Found {len(pickle_files)} pickle files")
     else:
-        print("   ❌ Correct path does not exist")
-        issues_found.append("Correct data path does not exist")
+        print("   ❌ Your data path does not exist")
+        issues_found.append("Your data path does not exist")
+    
+    # Check if there are any pickle files in subdirectories
+    if os.path.exists(data_loading_path):
+        total_pickles = 0
+        for root, dirs, files in os.walk(data_loading_path):
+            for file in files:
+                if file.endswith('.pickle'):
+                    total_pickles += 1
+        print(f"   Total pickle files (including subdirs): {total_pickles}")
     
     # 4. Check output path permissions
     print("\n4️⃣ OUTPUT PATH PERMISSIONS:")
