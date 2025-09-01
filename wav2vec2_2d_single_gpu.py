@@ -206,6 +206,24 @@ def train_2d(model, data_loader, optimizer, device):
         if step == 0:
             print(f"Final input shape for 2D CNN: {input_values.shape}")
             print(f"Final range: [{input_values.min():.6f}, {input_values.max():.6f}]")
+            
+            # Debug: Test the model with this input to see what happens
+            print(f"🔍 Testing model forward pass with input shape: {input_values.shape}")
+            try:
+                with torch.no_grad():
+                    test_output = model.feature_extractor(input_values)
+                    print(f"✅ Feature extractor output shape: {test_output.shape}")
+                    
+                    # Test the reshape operation
+                    B, C, H, W = test_output.shape
+                    test_features = test_output.permute(0, 2, 3, 1).reshape(B, H * W, C)
+                    print(f"✅ Reshaped features shape: {test_features.shape}")
+                    print(f"✅ Expected layer_norm input shape: [*, {test_features.shape[-1]}]")
+                    
+            except Exception as e:
+                print(f"❌ Error in test forward pass: {e}")
+                import traceback
+                traceback.print_exc()
         
         # Compute masking for 2D input
         mask_time_indices, sampled_negative_indices = compute_mask_inputs_2d(model, input_values, device)
@@ -511,27 +529,7 @@ def run_wav2vec2_2d(sessions, sess):
         print("Continuing without wandb logging...")
         wandb = None
 
-    # --- Model Initialization ---
-    print(f"🏗️ Creating model with config: input_height={w2v2_2d_config.input_height}, input_width={w2v2_2d_config.input_width}")
-    if rand_init:
-        ssl_model = Wav2Vec2_2DModel(w2v2_2d_config)
-    else:
-        # For 2D model, you might want to initialize from a pretrained 1D model
-        # and adapt the first layer to 2D, or start from scratch
-        ssl_model = Wav2Vec2_2DModel(w2v2_2d_config)
-
-    print(f"Model parameter count: {sum(p.numel() for p in ssl_model.parameters() if p.requires_grad)}")
-
-    ssl_model.to(device)
-    print(f"Model moved to device: {device}")
-    
-    # Save the model configuration
-    os.makedirs(f"{output_path}/{session}/ssl_model/", exist_ok=True)
-    torch.save(ssl_model.state_dict(), f"{output_path}/{session}/ssl_model/model.pt")
-    torch.save(w2v2_2d_config, f"{output_path}/{session}/ssl_model/config.pt")
-
-    # self supervised pretraining
-    optimizer = torch.optim.AdamW(ssl_model.parameters(), lr=train_config['lr'])
+    # Model will be created after dataset creation and configuration update
 
     # Create datasets using ModifiedSessionDataset for 2D matrix format
     try:
@@ -551,9 +549,44 @@ def run_wav2vec2_2d(sessions, sess):
             w2v2_2d_config.input_width = actual_width
             print(f"🔧 Updated model config: input_height={actual_height}, input_width={actual_width}")
             
+            # Calculate expected output dimensions after 2D CNN
+            feature_enc_layers = eval(w2v2_2d_config.conv_2d_feature_layers)
+            h, w = actual_height, actual_width
+            for _, kernel_size, stride in feature_enc_layers:
+                h = (h - kernel_size) // stride + 1
+                w = (w - kernel_size) // stride + 1
+            
+            expected_embed_dim = feature_enc_layers[-1][0]  # Last layer's output channels
+            expected_layer_norm_size = expected_embed_dim * h * w
+            print(f"🔧 Expected layer_norm size: {expected_layer_norm_size}")
+            print(f"🔧 Expected output dimensions: [{h}, {w}] with {expected_embed_dim} channels")
+            
         else:
             print("❌ No training sessions found!")
             return
+            
+        # --- Model Initialization (after configuration update) ---
+        print(f"🏗️ Creating model with updated config: input_height={w2v2_2d_config.input_height}, input_width={w2v2_2d_config.input_width}")
+        if rand_init:
+            ssl_model = Wav2Vec2_2DModel(w2v2_2d_config)
+        else:
+            # For 2D model, you might want to initialize from a pretrained 1D model
+            # and adapt the first layer to 2D, or start from scratch
+            ssl_model = Wav2Vec2_2DModel(w2v2_2d_config)
+
+        print(f"Model parameter count: {sum(p.numel() for p in ssl_model.parameters() if p.requires_grad)}")
+
+        ssl_model.to(device)
+        print(f"Model moved to device: {device}")
+        
+        # Save the model configuration and initial state
+        os.makedirs(f"{output_path}/{session}/ssl_model/", exist_ok=True)
+        torch.save(ssl_model.state_dict(), f"{output_path}/{session}/ssl_model/model.pt")
+        torch.save(w2v2_2d_config, f"{output_path}/{session}/ssl_model/config.pt")
+        
+        # Create optimizer after model creation
+        optimizer = torch.optim.AdamW(ssl_model.parameters(), lr=train_config['lr'])
+        print(f"✅ Optimizer created with learning rate: {train_config['lr']}")
             
         if val_sessions:
             val_dataset = ModifiedSessionDataset(data_path=val_sessions[0], subset_data=subset_data)
