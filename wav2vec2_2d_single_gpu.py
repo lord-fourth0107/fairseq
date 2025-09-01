@@ -28,6 +28,7 @@ from fairseq.models.wav2vec.wav2vec2_2d import Wav2Vec2_2DConfig, Wav2Vec2_2DMod
 from fairseq.dataclass import FairseqDataclass
 from blind_localization.data.PCAviz import PCAVisualizer
 from blind_localization.data.lazyloader_dataset import SessionDataset
+from modified_session_dataset import ModifiedSessionDataset
 from tqdm import tqdm
 from matplotlib.patches import Wedge
 from scipy.special import softmax
@@ -66,13 +67,18 @@ load_data, rand_init, ssl, selected_session = args.load_data, args.rand_init, ar
 input_height, input_width, use_spatial_embedding = args.input_height, args.input_width, args.use_spatial_embedding
 gpu_id = args.gpu_id
 
+# Additional arguments for training
+output_path = f"/vast/us2193/ssl_output/{data}/{data_type}/wav2vec2_2d/across_session"
+epochs = 10
+subset_data = 0.1
+num_workers = 0
+
 print(f"Data: {data}, Data Type: {data_type}, Trial Length: {trial_length}, Sampling Rate: {sampling_rate}")
 print(f"Input Dimensions: {input_height}x{input_width}, Spatial Embedding: {use_spatial_embedding}")
 print(f"Load Data: {load_data}, rand_init: {rand_init}, ssl: {ssl}, session: {selected_session}")
 print(f"Using GPU: {gpu_id}")
 print("cuda is available: ", torch.cuda.is_available())
 
-output_path = f"../results/{data}/{data_type}/wav2vec2_2d/across_session"
 if not os.path.exists(output_path):
     os.makedirs(output_path)
 
@@ -117,42 +123,30 @@ def train_2d(model, data_loader, optimizer, device):
     model.train()
     print(f"Number of train samples: {len(data_loader)}")
     
-    for step, (input_values, _) in enumerate(data_loader):
-        # input_values comes as (B, signal_length) from SessionDataset
-        # We need to reshape it to (B, C, H, W) for 2D CNN
+    for step, (input_values, probe_ids) in enumerate(data_loader):
+        # input_values comes as (B, C, H, W) from ModifiedSessionDataset
+        # Shape: [1, 1, 3750, 93] - already properly formatted for 2D CNN
         input_values = input_values.float().to(device)
         
         # Debug: Print original shape
         if step == 0:
-            print(f"Original input shape: {input_values.shape}")
-            print(f"Sample signal length: {input_values.shape[1]}")
+            print(f"Input shape from ModifiedSessionDataset: {input_values.shape}")
+            print(f"Probe IDs: {probe_ids}")
+            print(f"Input range: [{input_values.min():.6f}, {input_values.max():.6f}]")
         
-        # Reshape 1D signal to 2D spectrogram-like format
-        batch_size, signal_length = input_values.shape
-        
-        # Calculate dimensions for 2D reshaping
-        # For 128x128 output, we need signal_length = 128*128 = 16384
-        # If signal is shorter, we'll pad; if longer, we'll truncate
-        target_size = 128 * 128  # input_height * input_width
-        
-        if signal_length < target_size:
-            # Pad with zeros if signal is too short
-            padding = torch.zeros(batch_size, target_size - signal_length, device=device)
-            input_values = torch.cat([input_values, padding], dim=1)
-            if step == 0:
-                print(f"Padded signal from {signal_length} to {target_size}")
-        else:
-            # Truncate if signal is too long
-            input_values = input_values[:, :target_size]
-            if step == 0:
-                print(f"Truncated signal from {signal_length} to {target_size}")
-        
-        # Reshape to (B, C, H, W) where C=1, H=128, W=128
-        input_values = input_values.view(batch_size, 1, 128, 128)
+        # The input_values is already in the correct format:
+        # [batch, channels, height, width] = [1, 1, 3750, 93]
+        # Height: 3750 time points (spatial dimension)
+        # Width: 93 channels (temporal dimension)
+        batch_size, channels, height, width = input_values.shape
         
         if step == 0:
-            print(f"Final input shape: {input_values.shape}")
-            print(f"Input range: [{input_values.min():.3f}, {input_values.max():.3f}]")
+            print(f"2D CNN input shape: {input_values.shape}")
+            print(f"Batch size: {batch_size}")
+            print(f"Channels: {channels}")
+            print(f"Height (time points): {height}")
+            print(f"Width (channels): {width}")
+            print(f"Input range: [{input_values.min():.6f}, {input_values.max():.6f}]")
         
         # Compute masking for 2D input
         mask_time_indices, sampled_negative_indices = compute_mask_inputs_2d(model, input_values, device)
@@ -196,21 +190,12 @@ def validate_2d(model, data_loader, device):
     print(f"Number of val samples: {len(data_loader)}")
 
     with torch.no_grad():
-        for step, (input_values, _) in enumerate(data_loader):
+        for step, (input_values, probe_ids) in enumerate(data_loader):
             input_values = input_values.float().to(device)
             
-            # Reshape 1D signal to 2D spectrogram-like format (same as training)
-            batch_size, signal_length = input_values.shape
-            target_size = 128 * 128  # input_height * input_width
-            
-            if signal_length < target_size:
-                padding = torch.zeros(batch_size, target_size - signal_length, device=device)
-                input_values = torch.cat([input_values, padding], dim=1)
-            else:
-                input_values = input_values[:, :target_size]
-            
-            # Reshape to (B, C, H, W) where C=1, H=128, W=128
-            input_values = input_values.view(batch_size, 1, 128, 128)
+            # input_values comes as (B, C, H, W) from ModifiedSessionDataset
+            # Shape: [1, 1, 3750, 93] - already properly formatted for 2D CNN
+            # No reshaping needed - already in correct format
             
             mask_time_indices, sampled_negative_indices = compute_mask_inputs_2d(model, input_values, device)
             
@@ -269,18 +254,10 @@ def train_probe_2d(prober, train_loader, val_loader, device):
     for xb, yb in train_loader:
         xb, yb = xb.to(device), yb.to(device)
         
-        # Reshape 1D signal to 2D spectrogram-like format (same as training)
-        batch_size, signal_length = xb.shape
-        target_size = 128 * 128  # input_height * input_width
-        
-        if signal_length < target_size:
-            padding = torch.zeros(batch_size, target_size - signal_length, device=device)
-            xb = torch.cat([xb, padding], dim=1)
-        else:
-            xb = xb[:, :target_size]
-        
-        # Reshape to (B, C, H, W) where C=1, H=128, W=128
-        xb = xb.view(batch_size, 1, 128, 128)
+        # The xb is already a 2D matrix from stacking multiple recordings
+        # Reshape to (B, C, H, W) where:
+        # B = 1 (single batch), C = 1 (single channel), H = num_recordings, W = time_points
+        xb = xb.unsqueeze(0).unsqueeze(0)  # [1, 1, num_recordings, time_points]
             
         logits = prober(xb)
         loss = criterion(logits, yb)
@@ -296,18 +273,10 @@ def train_probe_2d(prober, train_loader, val_loader, device):
         for xb, yb in val_loader:
             xb, yb = xb.to(device), yb.to(device)
             
-            # Reshape 1D signal to 2D spectrogram-like format (same as training)
-            batch_size, signal_length = xb.shape
-            target_size = 128 * 128  # input_height * input_width
-            
-            if signal_length < target_size:
-                padding = torch.zeros(batch_size, target_size - signal_length, device=device)
-                xb = torch.cat([xb, padding], dim=1)
-            else:
-                xb = xb[:, :target_size]
-            
-            # Reshape to (B, C, H, W) where C=1, H=128, W=128
-            xb = xb.view(batch_size, 1, 128, 128)
+            # The xb is already a 2D matrix from stacking multiple recordings
+            # Reshape to (B, C, H, W) where:
+            # B = 1 (single batch), C = 1 (single channel), H = num_recordings, W = time_points
+            xb = xb.unsqueeze(0).unsqueeze(0)  # [1, 1, num_recordings, time_points]
                 
             logits = prober(xb)
             loss = criterion(logits, yb)
@@ -335,8 +304,8 @@ def run_wav2vec2_2d(sessions, sess):
         device = torch.device("cpu")
         print("Using CPU")
     
-    subset_data = 0.5  # 0.001 for 0.1% of the data, 0.01 for 1% of the data
-    num_workers = 4  # 0 for single process, 4 for multi-process
+    subset_data = 0.1  # 0.001 for 0.1% of the data, 0.01 for 1% of the data
+    num_workers = 0  # 0 for single process, 4 for multi-process (reduced to prevent memory issues)
     epochs = 10  # Number of epochs to train the model
     print(f"Subset data: {subset_data}, Number of workers: {num_workers}, Epochs: {epochs}")
 
@@ -366,7 +335,7 @@ def run_wav2vec2_2d(sessions, sess):
         print("Validate on ", val_session_list)
         print("Testing on ", sess)
 
-    data_loading_path = "Allen_w2v2/Allen"
+    data_loading_path = "/scratch/mkp6112/LFP/region_decoding/script/Allen_w2v2/Allen"
     all_pickles = []
     
     # Fix the path construction issue
@@ -397,13 +366,13 @@ def run_wav2vec2_2d(sessions, sess):
 
     print("Training the wav2vec2_2d model...")
     
-    # Create wav2vec2_2d configuration
+    # Create wav2vec2_2d configuration for 2D matrix input
     w2v2_2d_config = Wav2Vec2_2DConfig(
-        # 2D CNN specific parameters
+        # 2D CNN specific parameters for [3750 × 93] input
         conv_2d_feature_layers="[(64, 3, 2), (128, 3, 2), (256, 3, 2), (512, 3, 2)]",
         input_channels=1,
-        input_height=input_height,
-        input_width=input_width,
+        input_height=3750,  # Time points (height dimension)
+        input_width=93,     # Channels (width dimension)
         
         # Transformer parameters
         encoder_layers=12,
@@ -467,27 +436,25 @@ def run_wav2vec2_2d(sessions, sess):
     # self supervised pretraining
     optimizer = torch.optim.AdamW(ssl_model.parameters(), lr=train_config['lr'])
 
-    # Create datasets
+    # Create datasets using ModifiedSessionDataset for 2D matrix format
     try:
-        train_dataset = SessionDataset(session_paths=train_sessions, include_labels=False,
-                                       data_subset_percentage=subset_data)
-        val_dataset = SessionDataset(session_paths=val_sessions, include_labels=False,
-                                     data_subset_percentage=subset_data)
-        test_dataset = SessionDataset(session_paths=test_sessions, include_labels=False,
-                                      data_subset_percentage=subset_data)
+        # Use ModifiedSessionDataset for 2D matrix format [3750 × 93]
+        train_dataset = ModifiedSessionDataset(data_path=train_sessions[0] if train_sessions else None, 
+                                             subset_data=subset_data)
+        val_dataset = ModifiedSessionDataset(data_path=val_sessions[0] if val_sessions else None, 
+                                           subset_data=subset_data)
+        test_dataset = ModifiedSessionDataset(data_path=test_sessions[0] if test_sessions else None, 
+                                            subset_data=subset_data)
         
-        train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, num_workers=num_workers,
+        train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True, num_workers=num_workers,
                                   pin_memory=True)
-        val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=num_workers,
+        val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False, num_workers=num_workers,
                                 pin_memory=True)
-        test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False, num_workers=num_workers,
+        test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False, num_workers=num_workers,
                                  pin_memory=True)
 
-        train_chance_acc, val_chance_acc, test_chance_acc = train_dataset.get_chance_accuracy(), \
-            val_dataset.get_chance_accuracy(), test_dataset.get_chance_accuracy()
-        print(f"Train Chance Accuracy: {train_chance_acc:.4f}, "
-              f"Validation Chance Accuracy: {val_chance_acc:.4f}, "
-              f"Test Chance Accuracy: {test_chance_acc:.4f}")
+        # ModifiedSessionDataset doesn't have chance accuracy method
+        print(f"Using ModifiedSessionDataset for 2D matrix format [3750 × 93]")
 
         # For downstream tasks, we need to create a probe dataset
         train_probe_dataset = SessionDataset(session_paths=train_sessions, include_labels=True,
@@ -495,10 +462,10 @@ def run_wav2vec2_2d(sessions, sess):
         val_probe_dataset = SessionDataset(session_paths=val_sessions, include_labels=True,
                                            data_subset_percentage=subset_data, super_regions=True)
         
-        train_probe_loader = DataLoader(train_probe_dataset, batch_size=32, shuffle=True, pin_memory=True,
+        train_probe_loader = DataLoader(train_probe_dataset, batch_size=16, shuffle=True, pin_memory=True,
                                         num_workers=num_workers)
-        val_probe_loader = DataLoader(val_probe_dataset, batch_size=32, shuffle=False, pin_memory=True,
-                                      num_workers=num_workers)
+        val_probe_loader = DataLoader(val_probe_dataset, batch_size=16, shuffle=False, pin_memory=True,
+                                          num_workers=num_workers)
 
         train_probe_chance_acc, val_probe_chance_acc = train_probe_dataset.get_chance_accuracy(), \
             val_probe_dataset.get_chance_accuracy()
