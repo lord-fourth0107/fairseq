@@ -416,6 +416,26 @@ class LinearProber2D(nn.Module):
 
     def forward(self, x):
         with torch.no_grad():
+            # Debug: Print input dimensions
+            if not hasattr(self, '_prober_debug_printed'):
+                print(f"🔍 Prober Input Debug:")
+                print(f"   Input x shape: {x.shape}")
+                self._prober_debug_printed = True
+            
+            # Check if dimensions are too small for 3x3 kernel
+            if len(x.shape) == 4 and (x.shape[2] < 3 or x.shape[3] < 3):
+                if not hasattr(self, '_prober_debug_printed'):
+                    print(f"   ⚠️ Input dimensions too small for 3x3 kernel: {x.shape[2]}x{x.shape[3]}")
+                    print(f"   🔄 Padding to minimum size...")
+                
+                # Pad the input to ensure it's at least 3x3
+                pad_h = max(0, 3 - x.shape[2])
+                pad_w = max(0, 3 - x.shape[3])
+                x = torch.nn.functional.pad(x, (0, pad_w, 0, pad_h), mode='constant', value=0)
+                
+                if not hasattr(self, '_prober_debug_printed'):
+                    print(f"   ✅ Padded input shape: {x.shape}")
+            
             # For 2D input, we need to handle the spatial dimensions
             reps = self.encoder(x, features_only=True)['x']  # Get features from encoder
             
