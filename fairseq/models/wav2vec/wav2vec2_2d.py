@@ -771,7 +771,7 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
             negs = negs.view(fsz, bsz, total_negatives, tsz).permute(2, 1, 0, 3)
             if not hasattr(self, '_neg_debug_printed'):
                 print(f"   ✅ Standard reshape successful: {negs.shape}")
-            return negs
+            return negs, None
         except RuntimeError as e:
             if not hasattr(self, '_neg_debug_printed'):
                 print(f"   ⚠️ Standard reshape failed: {e}")
@@ -796,7 +796,7 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
                     negs = negs.view(fsz, bsz, inferred_negatives, tsz).permute(2, 1, 0, 3)
                     if not hasattr(self, '_neg_debug_printed'):
                         print(f"   ✅ Inferred reshape successful: {negs.shape}")
-                    return negs
+                    return negs, None
                 except RuntimeError as e2:
                     if not hasattr(self, '_neg_debug_printed'):
                         print(f"   ❌ Inferred reshape failed: {e2}")
@@ -807,7 +807,7 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
             
             # Return a tensor with the expected shape but filled with zeros
             fallback_shape = (total_negatives, bsz, fsz, tsz)
-            return torch.zeros(fallback_shape, dtype=negs.dtype, device=negs.device)
+            return torch.zeros(fallback_shape, dtype=negs.dtype, device=negs.device), None
 
     def compute_preds(self, x, y, negatives):
         neg_is_pos = (y == negatives).all(dim=-1)
