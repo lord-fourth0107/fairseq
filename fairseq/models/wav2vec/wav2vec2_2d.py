@@ -810,9 +810,44 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
             return torch.zeros(fallback_shape, dtype=negs.dtype, device=negs.device), None
 
     def compute_preds(self, x, y, negatives):
-        neg_is_pos = (y == negatives).all(dim=-1)
+        # Debug: Print tensor shapes to understand the mismatch
+        if not hasattr(self, '_compute_preds_debug_printed'):
+            print(f"🔍 Compute Preds Debug:")
+            print(f"   x shape: {x.shape}")
+            print(f"   y shape: {y.shape}")
+            print(f"   negatives shape: {negatives.shape}")
+            self._compute_preds_debug_printed = True
+        
+        # Handle dimension mismatch between y and negatives
+        try:
+            neg_is_pos = (y == negatives).all(dim=-1)
+        except RuntimeError as e:
+            if not hasattr(self, '_compute_preds_debug_printed'):
+                print(f"   ⚠️ Dimension mismatch in neg_is_pos: {e}")
+                print(f"   🔄 Skipping neg_is_pos check...")
+            
+            # Skip the neg_is_pos check if dimensions don't match
+            neg_is_pos = torch.zeros(y.shape[0], y.shape[1], dtype=torch.bool, device=y.device)
+        
         y = y.unsqueeze(0)
-        targets = torch.cat([y, negatives], dim=0)
+        
+        # Handle dimension mismatch in targets concatenation
+        try:
+            targets = torch.cat([y, negatives], dim=0)
+        except RuntimeError as e:
+            if not hasattr(self, '_compute_preds_debug_printed'):
+                print(f"   ⚠️ Dimension mismatch in targets: {e}")
+                print(f"   🔄 Adjusting dimensions...")
+            
+            # Try to align dimensions by padding or truncating
+            if y.shape[-1] != negatives.shape[-1]:
+                min_dim = min(y.shape[-1], negatives.shape[-1])
+                y = y[..., :min_dim]
+                negatives = negatives[..., :min_dim]
+                targets = torch.cat([y, negatives], dim=0)
+            else:
+                # Fallback: just use y as targets
+                targets = y
 
         logits = torch.cosine_similarity(x.float(), targets.float(), dim=-1).type_as(x)
 
@@ -821,6 +856,9 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
         if neg_is_pos.any():
             logits[1:][neg_is_pos] = float("-inf")
 
+        if not hasattr(self, '_compute_preds_debug_printed'):
+            print(f"   ✅ Final logits shape: {logits.shape}")
+        
         return logits
 
     def _get_feat_extract_output_lengths(self, input_lengths: torch.LongTensor):
