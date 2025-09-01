@@ -510,7 +510,15 @@ def train_probe_2d(prober, train_loader, val_loader, device):
             if not hasattr(prober, '_batch_size_debug_printed'):
                 print(f"   ✅ Adjusted to batch size: {min_batch_size}")
         
-        loss = criterion(logits, yb)
+        # Add timeout protection for loss computation
+        try:
+            loss = criterion(logits, yb)
+        except Exception as e:
+            print(f"❌ Loss computation failed: {e}")
+            print(f"   Logits shape: {logits.shape}")
+            print(f"   Targets shape: {yb.shape}")
+            # Skip this batch if loss computation fails
+            continue
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()

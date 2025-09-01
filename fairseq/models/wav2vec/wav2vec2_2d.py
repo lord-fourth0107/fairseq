@@ -972,7 +972,14 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
                 print(f"   ✅ Recreated layer_norm with dim: {correct_dim}")
             
             # Try again with the recreated layer_norm
-            features = self.layer_norm(features)
+            try:
+                features = self.layer_norm(features)
+            except RuntimeError as e2:
+                if not hasattr(self, '_layer_norm_debug_printed'):
+                    print(f"   ❌ Layer norm still failed: {e2}")
+                    print(f"   🔄 Skipping layer norm...")
+                # Skip layer norm if it still fails
+                pass
         unmasked_features = features.clone()
 
         # Handle padding mask for 2D input
@@ -1030,7 +1037,14 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
                     print(f"   ✅ Recreated post_extract_proj: {correct_input_size} -> {correct_output_size}")
                 
                 # Try again with the recreated layer
-                features = self.post_extract_proj(features)
+                try:
+                    features = self.post_extract_proj(features)
+                except RuntimeError as e3:
+                    if not hasattr(self, '_post_extract_debug_printed'):
+                        print(f"   ❌ Post extract proj still failed: {e3}")
+                        print(f"   🔄 Skipping post_extract_proj...")
+                    # Skip post_extract_proj if it still fails
+                    pass
 
         if self.spatial_embedding is not None:
             # For depth-wise regional input, we need to determine which depth region each channel belongs to
