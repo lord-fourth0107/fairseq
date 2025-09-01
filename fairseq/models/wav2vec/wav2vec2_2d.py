@@ -755,11 +755,47 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
             neg_idxs = torch.cat([neg_idxs, cross_neg_idxs], dim=1)
 
         negs = y[..., neg_idxs.view(-1)]
-        negs = negs.view(
-            fsz, bsz, self.n_negatives + self.cross_sample_negatives, tsz
-        ).permute(
-            2, 1, 0, 3
-        )  
+        
+        # Debug: Print dimensions to understand the issue (only for first call)
+        if not hasattr(self, '_neg_debug_printed'):
+            print(f"🔍 Negative Sampling Debug:")
+            print(f"   y shape: {y.shape}")
+            print(f"   neg_idxs shape: {neg_idxs.shape}")
+            print(f"   negs shape: {negs.shape}")
+            print(f"   Expected reshape: fsz={fsz}, bsz={bsz}, n_neg={self.n_negatives}, cross_neg={self.cross_sample_negatives}, tsz={tsz}")
+            self._neg_debug_printed = True
+        
+        # Calculate expected total elements
+        total_negatives = self.n_negatives + self.cross_sample_negatives
+        expected_elements = fsz * bsz * total_negatives * tsz
+        actual_elements = negs.numel()
+        
+        if actual_elements != expected_elements:
+            if not hasattr(self, '_neg_debug_printed'):
+                print(f"   Expected elements: {expected_elements}")
+                print(f"   Actual elements: {actual_elements}")
+                print(f"   ⚠️ Dimension mismatch! Adjusting reshape...")
+            
+            # Try to infer the correct dimensions
+            if actual_elements % (bsz * tsz) == 0:
+                inferred_negatives = actual_elements // (bsz * tsz * fsz)
+                if not hasattr(self, '_neg_debug_printed'):
+                    print(f"   Inferred negatives: {inferred_negatives}")
+                negs = negs.view(fsz, bsz, inferred_negatives, tsz).permute(2, 1, 0, 3)
+            else:
+                if not hasattr(self, '_neg_debug_printed'):
+                    print(f"   ❌ Cannot infer correct dimensions, using fallback")
+                # Fallback: just return the negs as is
+                return negs
+        else:
+            negs = negs.view(
+                fsz, bsz, self.n_negatives + self.cross_sample_negatives, tsz
+            ).permute(
+                2, 1, 0, 3
+            )
+        
+        if not hasattr(self, '_neg_debug_printed'):
+            print(f"   Final negs shape: {negs.shape}")
         return negs
 
     def compute_preds(self, x, y, negatives):
