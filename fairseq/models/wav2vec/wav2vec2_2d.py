@@ -2,7 +2,7 @@
 
 import math
 from dataclasses import dataclass, field
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 import numpy as np
 import torch
@@ -266,7 +266,7 @@ class Wav2Vec2_2DConfig(FairseqDataclass):
         default=0, metadata={"help": "number of negative examples codebook"}
     )
     sample_distance: int = field(
-        default=None, metadata={"help": "maximum distance for negative sampling"}
+        default=-1, metadata={"help": "maximum distance for negative sampling (-1 for no limit)"}
     )
 
     # positional embeddings
@@ -549,7 +549,7 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
         self.cross_sample_negatives = cfg.cross_sample_negatives
         self.codebook_negatives = cfg.codebook_negatives
         self.negatives_from_everywhere = cfg.negatives_from_everywhere
-        self.sample_distance = cfg.sample_distance
+        self.sample_distance = cfg.sample_distance if cfg.sample_distance != -1 else None
 
         self.logit_temp = cfg.logit_temp
 
