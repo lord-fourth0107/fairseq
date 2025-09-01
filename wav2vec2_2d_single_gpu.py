@@ -141,7 +141,31 @@ def train_2d(model, data_loader, optimizer, device):
             print(f"Input range: [{input_values.min():.6f}, {input_values.max():.6f}]")
         
         # Handle different input shapes
-        if len(input_values.shape) == 4:
+        if len(input_values.shape) == 5:
+            # 5D input: [batch, channels, depth, height, width] = [1, 1, 1, 3750, 77]
+            batch_size, channels, depth, height, width = input_values.shape
+            if step == 0:
+                print(f"✅ 5D input detected: {input_values.shape}")
+                print(f"Batch size: {batch_size}, Channels: {channels}, Depth: {depth}")
+                print(f"Height (time points): {height}, Width (channels): {width}")
+            
+            # Squeeze out the extra dimension to get 4D: [batch, channels, height, width]
+            if depth == 1:
+                input_values = input_values.squeeze(2)  # Remove depth dimension
+                batch_size, channels, height, width = input_values.shape
+                if step == 0:
+                    print(f"✅ Squeezed to 4D: {input_values.shape}")
+            else:
+                # If depth > 1, we need to handle this differently
+                if step == 0:
+                    print(f"⚠️ Depth > 1 ({depth}), reshaping to 4D")
+                # Reshape to [batch, channels, height*depth, width] or [batch, channels, height, width*depth]
+                input_values = input_values.view(batch_size, channels, height * depth, width)
+                batch_size, channels, height, width = input_values.shape
+                if step == 0:
+                    print(f"✅ Reshaped to 4D: {input_values.shape}")
+                    
+        elif len(input_values.shape) == 4:
             # Expected format: [batch, channels, height, width] = [1, 1, 3750, 93]
             batch_size, channels, height, width = input_values.shape
             if step == 0:
@@ -229,7 +253,15 @@ def validate_2d(model, data_loader, device):
             input_values = input_values.float().to(device)
             
             # Handle different input shapes (same as training function)
-            if len(input_values.shape) == 4:
+            if len(input_values.shape) == 5:
+                # 5D input: [batch, channels, depth, height, width]
+                batch_size, channels, depth, height, width = input_values.shape
+                if depth == 1:
+                    input_values = input_values.squeeze(2)  # Remove depth dimension
+                else:
+                    # Reshape to 4D
+                    input_values = input_values.view(batch_size, channels, height * depth, width)
+            elif len(input_values.shape) == 4:
                 # Expected format: [batch, channels, height, width]
                 pass
             elif len(input_values.shape) == 3:
@@ -480,6 +512,7 @@ def run_wav2vec2_2d(sessions, sess):
         wandb = None
 
     # --- Model Initialization ---
+    print(f"🏗️ Creating model with config: input_height={w2v2_2d_config.input_height}, input_width={w2v2_2d_config.input_width}")
     if rand_init:
         ssl_model = Wav2Vec2_2DModel(w2v2_2d_config)
     else:
@@ -507,6 +540,17 @@ def run_wav2vec2_2d(sessions, sess):
         if train_sessions:
             train_dataset = ModifiedSessionDataset(data_path=train_sessions[0], subset_data=subset_data)
             print(f"✅ Train dataset created from: {train_sessions[0]}")
+            
+            # Get actual data shape to update model configuration
+            sample_tensor, _ = train_dataset[0]
+            actual_height, actual_width = sample_tensor.shape[2], sample_tensor.shape[3]
+            print(f"📊 Actual data shape: [{actual_height}, {actual_width}]")
+            
+            # Update model configuration with actual dimensions
+            w2v2_2d_config.input_height = actual_height
+            w2v2_2d_config.input_width = actual_width
+            print(f"🔧 Updated model config: input_height={actual_height}, input_width={actual_width}")
+            
         else:
             print("❌ No training sessions found!")
             return
