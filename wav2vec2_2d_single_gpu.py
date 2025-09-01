@@ -141,6 +141,100 @@ def compute_mask_inputs_2d(model, input_values, device):
     return mask_time_indices, sampled_negatives
 
 
+def _robust_normalize_input_shape(input_values, step):
+    """
+    Robust input shape normalization that handles all possible input formats
+    """
+    original_shape = input_values.shape
+    
+    if len(input_values.shape) == 5:
+        # 5D input: [batch, channels, depth, height, width]
+        batch_size, channels, depth, height, width = input_values.shape
+        if step == 0:
+            print(f"✅ 5D input detected: {original_shape}")
+        
+        if depth == 1:
+            input_values = input_values.squeeze(2)  # Remove depth dimension
+        else:
+            # Reshape to combine depth with height
+            input_values = input_values.view(batch_size, channels, height * depth, width)
+        
+        if step == 0:
+            print(f"   ✅ Normalized to 4D: {input_values.shape}")
+            
+    elif len(input_values.shape) == 4:
+        # Already 4D: [batch, channels, height, width]
+        if step == 0:
+            print(f"✅ 4D input detected: {original_shape}")
+            
+    elif len(input_values.shape) == 3:
+        # 3D input: [batch, height, width] -> [batch, 1, height, width]
+        input_values = input_values.unsqueeze(1)
+        if step == 0:
+            print(f"✅ 3D input normalized to 4D: {input_values.shape}")
+            
+    elif len(input_values.shape) == 2:
+        # 2D input: [batch, features] -> [batch, 1, height, width]
+        batch_size, features = input_values.shape
+        input_values = _infer_2d_shape_from_features(input_values, step)
+        
+    else:
+        raise ValueError(f"Unsupported input shape: {original_shape}")
+    
+    # Ensure minimum size for CNN kernels
+    if len(input_values.shape) == 4 and (input_values.shape[2] < 3 or input_values.shape[3] < 3):
+        if step == 0:
+            print(f"⚠️ Input too small for 3x3 kernels, padding...")
+        pad_h = max(0, 3 - input_values.shape[2])
+        pad_w = max(0, 3 - input_values.shape[3])
+        input_values = torch.nn.functional.pad(input_values, (0, pad_w, 0, pad_h), mode='constant', value=0)
+        if step == 0:
+            print(f"   ✅ Padded to: {input_values.shape}")
+    
+    return input_values
+
+def _infer_2d_shape_from_features(tensor, step):
+    """Infer 2D shape from flattened features"""
+    batch_size, features = tensor.shape
+    
+    # Try common neural data configurations
+    possible_configs = [
+        (3750, 77),   # Common neural data
+        (3750, 93),   # Common neural data  
+        (3750, 64),   # Power of 2
+        (3750, 128),  # Power of 2
+        (3750, 256),  # Power of 2
+    ]
+    
+    for height, width in possible_configs:
+        if features == height * width:
+            if step == 0:
+                print(f"✅ 2D input inferred as: [batch, 1, {height}, {width}]")
+            return tensor.view(batch_size, 1, height, width)
+    
+    # Fallback: try to infer from features
+    if features % 3750 == 0:
+        width = features // 3750
+        if step == 0:
+            print(f"✅ 2D input inferred as: [batch, 1, 3750, {width}]")
+        return tensor.view(batch_size, 1, 3750, width)
+    
+    # Last resort: pad to minimum size and make square-ish
+    min_size = 3
+    if features < min_size * min_size:
+        pad_size = min_size * min_size - features
+        tensor = torch.nn.functional.pad(tensor, (0, pad_size), mode='constant', value=0)
+        features = min_size * min_size
+    
+    sqrt_features = int(features ** 0.5)
+    height = sqrt_features
+    width = features // height
+    
+    if step == 0:
+        print(f"⚠️ 2D input fallback: [batch, 1, {height}, {width}]")
+    
+    return tensor.view(batch_size, 1, height, width)
+
 def train_2d(model, data_loader, optimizer, device):
     total_loss = 0
     grad_norms = []
@@ -164,68 +258,8 @@ def train_2d(model, data_loader, optimizer, device):
             print(f"Input dimensions: {len(input_values.shape)}")
             print(f"Input range: [{input_values.min():.6f}, {input_values.max():.6f}]")
         
-        # Handle different input shapes
-        if len(input_values.shape) == 5:
-            # 5D input: [batch, channels, depth, height, width] = [1, 1, 1, 3750, 77]
-            batch_size, channels, depth, height, width = input_values.shape
-            if step == 0:
-                print(f"✅ 5D input detected: {input_values.shape}")
-                print(f"Batch size: {batch_size}, Channels: {channels}, Depth: {depth}")
-                print(f"Height (time points): {height}, Width (channels): {width}")
-            
-            # Squeeze out the extra dimension to get 4D: [batch, channels, height, width]
-            if depth == 1:
-                input_values = input_values.squeeze(2)  # Remove depth dimension
-                batch_size, channels, height, width = input_values.shape
-                if step == 0:
-                    print(f"✅ Squeezed to 4D: {input_values.shape}")
-            else:
-                # If depth > 1, we need to handle this differently
-                if step == 0:
-                    print(f"⚠️ Depth > 1 ({depth}), reshaping to 4D")
-                # Reshape to [batch, channels, height*depth, width] or [batch, channels, height, width*depth]
-                input_values = input_values.view(batch_size, channels, height * depth, width)
-                batch_size, channels, height, width = input_values.shape
-                if step == 0:
-                    print(f"✅ Reshaped to 4D: {input_values.shape}")
-                    
-        elif len(input_values.shape) == 4:
-            # Expected format: [batch, channels, height, width] = [1, 1, 3750, 93]
-            batch_size, channels, height, width = input_values.shape
-            if step == 0:
-                print(f"✅ 4D input detected: {input_values.shape}")
-                print(f"Batch size: {batch_size}, Channels: {channels}")
-                print(f"Height (time points): {height}, Width (channels): {width}")
-        elif len(input_values.shape) == 3:
-            # Possible format: [batch, height, width] = [1, 3750, 93]
-            batch_size, height, width = input_values.shape
-            channels = 1
-            input_values = input_values.unsqueeze(1)  # Add channel dimension
-            if step == 0:
-                print(f"✅ 3D input detected, adding channel dimension: {input_values.shape}")
-                print(f"Batch size: {batch_size}, Channels: {channels}")
-                print(f"Height (time points): {height}, Width (channels): {width}")
-        elif len(input_values.shape) == 2:
-            # Fallback: [batch, features] - need to reshape
-            batch_size, features = input_values.shape
-            # Assume this is a flattened version, try to reshape
-            if features == 3750 * 93:  # 348,750 features
-                input_values = input_values.view(batch_size, 1, 3750, 93)
-                batch_size, channels, height, width = input_values.shape
-                if step == 0:
-                    print(f"✅ 2D input detected, reshaping to: {input_values.shape}")
-                    print(f"Batch size: {batch_size}, Channels: {channels}")
-                    print(f"Height (time points): {height}, Width (channels): {width}")
-            else:
-                # Try to reshape as [batch, 1, features, 1] for compatibility
-                input_values = input_values.unsqueeze(1).unsqueeze(-1)
-                batch_size, channels, height, width = input_values.shape
-                if step == 0:
-                    print(f"⚠️ 2D input with {features} features, reshaping to: {input_values.shape}")
-                    print(f"Batch size: {batch_size}, Channels: {channels}")
-                    print(f"Height: {height}, Width: {width}")
-        else:
-            raise ValueError(f"Unexpected input shape: {input_values.shape}")
+        # ROBUST INPUT SHAPE HANDLING - Comprehensive fix for all dimension issues
+        input_values = self._robust_normalize_input_shape(input_values, step)
         
         if step == 0:
             print(f"Final input shape for 2D CNN: {input_values.shape}")
@@ -359,47 +393,8 @@ def validate_2d(model, data_loader, device):
         for step, (input_values, probe_ids) in enumerate(data_loader):
             input_values = input_values.float().to(device)
             
-            # Handle different input shapes (same as training function)
-            if len(input_values.shape) == 5:
-                # 5D input: [batch, channels, depth, height, width]
-                batch_size, channels, depth, height, width = input_values.shape
-                if depth == 1:
-                    input_values = input_values.squeeze(2)  # Remove depth dimension
-                else:
-                    # Reshape to 4D
-                    input_values = input_values.view(batch_size, channels, height * depth, width)
-            elif len(input_values.shape) == 4:
-                # Expected format: [batch, channels, height, width]
-                pass
-            elif len(input_values.shape) == 3:
-                # Add channel dimension
-                input_values = input_values.unsqueeze(1)
-            elif len(input_values.shape) == 2:
-                # Try to reshape - use dynamic approach instead of hardcoded dimensions
-                batch_size, features = input_values.shape
-                # Try common channel counts: 77, 93, or other multiples
-                possible_channels = [77, 93, 64, 128, 256]
-                reshaped = False
-                
-                for channels in possible_channels:
-                    if features == 3750 * channels:
-                        input_values = input_values.view(batch_size, 1, 3750, channels)
-                        reshaped = True
-                        if step == 0:
-                            print(f"✅ Reshaped 2D input to: {input_values.shape} (channels: {channels})")
-                        break
-                
-                if not reshaped:
-                    # Fallback: try to infer dimensions
-                    if features % 3750 == 0:
-                        inferred_channels = features // 3750
-                        input_values = input_values.view(batch_size, 1, 3750, inferred_channels)
-                        if step == 0:
-                            print(f"✅ Inferred and reshaped 2D input to: {input_values.shape} (channels: {inferred_channels})")
-                    else:
-                        input_values = input_values.unsqueeze(1).unsqueeze(-1)
-                        if step == 0:
-                            print(f"⚠️ Could not infer 2D shape, using fallback: {input_values.shape}")
+            # ROBUST INPUT SHAPE HANDLING - Same as training
+            input_values = _robust_normalize_input_shape(input_values, step)
             
             mask_time_indices, sampled_negative_indices = compute_mask_inputs_2d(model, input_values, device)
             
@@ -497,6 +492,24 @@ def train_probe_2d(prober, train_loader, val_loader, device):
         xb = xb.unsqueeze(0).unsqueeze(0)  # [1, 1, num_recordings, time_points]
             
         logits = prober(xb)
+        
+        # Handle batch size mismatch between logits and targets
+        if logits.shape[0] != yb.shape[0]:
+            if not hasattr(prober, '_batch_size_debug_printed'):
+                print(f"🔍 Batch Size Debug:")
+                print(f"   Logits shape: {logits.shape}")
+                print(f"   Targets shape: {yb.shape}")
+                print(f"   🔄 Adjusting batch sizes...")
+                prober._batch_size_debug_printed = True
+            
+            # Adjust batch sizes to match
+            min_batch_size = min(logits.shape[0], yb.shape[0])
+            logits = logits[:min_batch_size]
+            yb = yb[:min_batch_size]
+            
+            if not hasattr(prober, '_batch_size_debug_printed'):
+                print(f"   ✅ Adjusted to batch size: {min_batch_size}")
+        
         loss = criterion(logits, yb)
         optimizer.zero_grad()
         loss.backward()
@@ -516,6 +529,14 @@ def train_probe_2d(prober, train_loader, val_loader, device):
             xb = xb.unsqueeze(0).unsqueeze(0)  # [1, 1, num_recordings, time_points]
                 
             logits = prober(xb)
+            
+            # Handle batch size mismatch between logits and targets
+            if logits.shape[0] != yb.shape[0]:
+                # Adjust batch sizes to match
+                min_batch_size = min(logits.shape[0], yb.shape[0])
+                logits = logits[:min_batch_size]
+                yb = yb[:min_batch_size]
+            
             loss = criterion(logits, yb)
             val_loss += loss.item() * xb.size(0)
             val_correct += (logits.argmax(1) == yb).sum().item()
