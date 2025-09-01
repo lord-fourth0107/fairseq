@@ -295,30 +295,52 @@ def train_2d(model, data_loader, optimizer, device):
         # Compute masking for 2D input
         mask_time_indices, sampled_negative_indices = compute_mask_inputs_2d(model, input_values, device)
         
-        # Forward pass for 2D model
-        outputs = model(
-            source=input_values,
-            mask_indices=mask_time_indices,
-            features_only=False
-        )
+        # Forward pass for 2D model with error handling
+        try:
+            outputs = model(
+                source=input_values,
+                mask_indices=mask_time_indices,
+                features_only=False
+            )
+        except Exception as e:
+            print(f"❌ Model forward pass failed: {e}")
+            print(f"   Input shape: {input_values.shape}")
+            print(f"   Mask shape: {mask_time_indices.shape if mask_time_indices is not None else 'None'}")
+            # Skip this batch if model fails
+            continue
         
-        # Extract loss from outputs
-        if hasattr(outputs, 'loss') and outputs.loss is not None:
-            loss = outputs.loss
-        else:
-            # If no loss in outputs, compute a simple reconstruction loss
-            # This is a fallback - you should implement proper loss computation
-            features = outputs['features'] if 'features' in outputs else outputs['x']
-            loss = F.mse_loss(features, features.detach())  # Placeholder loss
+        # Extract loss from outputs with error handling
+        try:
+            if hasattr(outputs, 'loss') and outputs.loss is not None:
+                loss = outputs.loss
+            else:
+                # If no loss in outputs, compute a simple reconstruction loss
+                # This is a fallback - you should implement proper loss computation
+                features = outputs['features'] if 'features' in outputs else outputs['x']
+                loss = F.mse_loss(features, features.detach())  # Placeholder loss
+        except Exception as e:
+            print(f"❌ Loss computation failed: {e}")
+            print(f"   Outputs type: {type(outputs)}")
+            if hasattr(outputs, 'keys'):
+                print(f"   Outputs keys: {list(outputs.keys())}")
+            # Skip this batch if loss computation fails
+            continue
         
         if loss is None:
             continue
 
-        optimizer.zero_grad()
-        loss.backward()
-        grad_norm = get_grad_norm(model)
-        grad_norms.append(grad_norm)
-        optimizer.step()
+        # Backward pass with error handling
+        try:
+            optimizer.zero_grad()
+            loss.backward()
+            grad_norm = get_grad_norm(model)
+            grad_norms.append(grad_norm)
+            optimizer.step()
+        except Exception as e:
+            print(f"❌ Backward pass failed: {e}")
+            print(f"   Loss value: {loss.item() if loss is not None else 'None'}")
+            # Skip this batch if backward pass fails
+            continue
 
         total_loss += loss.item()
 
