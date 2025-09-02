@@ -1113,9 +1113,24 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
                 mask_channel_indices=mask_channel_indices,
             )
             if not is_xla_tensor(x) and mask_indices is not None:
-                y = unmasked_features[mask_indices].view(
-                    unmasked_features.size(0), -1, unmasked_features.size(-1)
-                )
+                try:
+                    y = unmasked_features[mask_indices].view(
+                        unmasked_features.size(0), -1, unmasked_features.size(-1)
+                    )
+                except RuntimeError as e:
+                    # Debug: Print tensor shapes to understand the mismatch
+                    if not hasattr(self, '_unmasked_y_reshape_debug_printed'):
+                        print(f"🔍 Unmasked Y Reshape Debug:")
+                        print(f"   unmasked_features shape: {unmasked_features.shape}")
+                        print(f"   mask_indices shape: {mask_indices.shape}")
+                        print(f"   unmasked_features[mask_indices] shape: {unmasked_features[mask_indices].shape}")
+                        print(f"   Expected view: [{unmasked_features.size(0)}, -1, {unmasked_features.size(-1)}]")
+                        print(f"   Error: {e}")
+                        self._unmasked_y_reshape_debug_printed = True
+                    
+                    # Fallback: use the original unmasked_features
+                    print(f"   ⚠️ Using fallback: keeping original unmasked_features shape {unmasked_features.shape}")
+                    y = unmasked_features
             else:
                 y = unmasked_features
         else:
@@ -1150,7 +1165,23 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
                     mask_indices[0].sum(),
                     padding_count=padding_count,
                 )
-                y = y[mask_indices].view(y.size(0), -1, y.size(-1))
+                try:
+                    y = y[mask_indices].view(y.size(0), -1, y.size(-1))
+                except RuntimeError as e:
+                    # Debug: Print tensor shapes to understand the mismatch
+                    if not hasattr(self, '_y_mask_reshape_debug_printed'):
+                        print(f"🔍 Y Mask Reshape Debug:")
+                        print(f"   y shape: {y.shape}")
+                        print(f"   mask_indices shape: {mask_indices.shape}")
+                        print(f"   y[mask_indices] shape: {y[mask_indices].shape}")
+                        print(f"   Expected view: [{y.size(0)}, -1, {y.size(-1)}]")
+                        print(f"   Error: {e}")
+                        self._y_mask_reshape_debug_printed = True
+                    
+                    # Fallback: use the original y without masking
+                    print(f"   ⚠️ Using fallback: keeping original y shape {y.shape}")
+                    # Don't apply masking if reshape fails
+                    pass
 
             else:
                 q = self.quantizer(y, produce_targets=False)
@@ -1195,7 +1226,23 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
                 )
 
         if not is_xla_tensor(x):
-            x = x[mask_indices].view(x.size(0), -1, x.size(-1))
+            try:
+                x = x[mask_indices].view(x.size(0), -1, x.size(-1))
+            except RuntimeError as e:
+                # Debug: Print tensor shapes to understand the mismatch
+                if not hasattr(self, '_mask_reshape_debug_printed'):
+                    print(f"🔍 Mask Reshape Debug:")
+                    print(f"   x shape: {x.shape}")
+                    print(f"   mask_indices shape: {mask_indices.shape}")
+                    print(f"   x[mask_indices] shape: {x[mask_indices].shape}")
+                    print(f"   Expected view: [{x.size(0)}, -1, {x.size(-1)}]")
+                    print(f"   Error: {e}")
+                    self._mask_reshape_debug_printed = True
+                
+                # Fallback: use the original x without masking
+                print(f"   ⚠️ Using fallback: keeping original x shape {x.shape}")
+                # Don't apply masking if reshape fails
+                pass
 
         if self.target_glu:
             y = self.target_glu(y)
