@@ -438,7 +438,13 @@ class LinearProber2D(nn.Module):
     def __init__(self, encoder, rep_dim, num_classes):
         super().__init__()
         self.encoder = encoder
-        self.classifier = nn.Linear(rep_dim, num_classes)
+        # Add adaptive pooling to handle varying output sizes
+        self.adaptive_pool = nn.AdaptiveAvgPool2d((1, 1))  # Always output (1, 1) spatial dimensions
+        # Initialize classifier with a placeholder - will be recreated with correct dimensions
+        self.classifier = None
+        self.expected_rep_dim = rep_dim
+        self.num_classes = num_classes
+        self._classifier_initialized = False
 
     def forward(self, x):
         # Debug: Print input dimensions
@@ -467,17 +473,44 @@ class LinearProber2D(nn.Module):
                 print(f"   ⚠️ Encoder output doesn't have 'x' key, using full output")
                 reps = encoder_output
             
-            # Handle different output shapes from encoder
+            # Handle different output shapes from encoder using adaptive pooling
             if len(reps.shape) == 3:  # (B, H*W, D)
-                # Average pooling over spatial dimensions: (B, H*W, D) -> (B, D)
-                reps = reps.mean(dim=1)
-            elif len(reps.shape) == 4:  # (B, D, H, W) - 2D features
-                # Global average pooling: (B, D, H, W) -> (B, D)
-                reps = reps.mean(dim=(2, 3))
+                print(f"   Converting 3D to 4D for adaptive pooling: {reps.shape}")
+                batch_size, seq_len, feature_dim = reps.shape
+                
+                # Option 1: Try to reshape to 4D using factor decomposition
+                def find_closest_factors(n):
+                    factors = []
+                    for i in range(1, int(n**0.5) + 1):
+                        if n % i == 0:
+                            factors.append((i, n // i))
+                    if factors:
+                        return min(factors, key=lambda x: abs(x[0] - x[1]))
+                    return None
+                
+                factors = find_closest_factors(seq_len)
+                if factors and factors[0] * factors[1] == seq_len:
+                    h, w = factors
+                    reps = reps.view(batch_size, feature_dim, h, w)
+                    print(f"   Reshaped 3D to 4D using factors {h}x{w}: {reps.shape}")
+                else:
+                    # Option 2: Use global average pooling directly on 3D tensor
+                    print(f"   Using global average pooling on 3D tensor")
+                    reps = reps.mean(dim=1)  # (B, H*W, D) -> (B, D)
+                    print(f"   After global average pooling: {reps.shape}")
+                
+            if len(reps.shape) == 4:  # (B, D, H, W) - 2D features
+                print(f"   Applying adaptive pooling to: {reps.shape}")
+                # Use adaptive pooling to get consistent output size
+                reps = self.adaptive_pool(reps)  # (B, D, 1, 1)
+                reps = reps.view(reps.shape[0], -1)  # (B, D)
+                print(f"   After adaptive pooling: {reps.shape}")
             elif len(reps.shape) == 2:  # (B, D) - already pooled
+                print(f"   Already 2D, no pooling needed: {reps.shape}")
                 # Already in the right format
                 pass
             else:
+                print(f"   Unknown shape {reps.shape}, flattening")
                 # Fallback: flatten and use first dimension
                 reps = reps.view(reps.shape[0], -1)
             
@@ -487,11 +520,25 @@ class LinearProber2D(nn.Module):
                 reps = reps.repeat(x.shape[0], 1)
                 
         except Exception as e:
-            print(f"❌ Prober forward pass failed: {e}")
+            print(f"❌ CRITICAL ERROR: Prober forward pass failed: {e}")
             import traceback
             traceback.print_exc()
-            # Return zero logits with correct batch size
-            return torch.zeros(x.shape[0], self.classifier.out_features, device=x.device)
+            print(f"   Input shape: {x.shape}")
+            print(f"   This indicates a fundamental issue with the encoder model")
+            print(f"   Raising exception to stop training and investigate")
+            raise RuntimeError(f"Prober forward pass failed: {e}") from e
+        
+        # Dynamically create classifier with correct input dimensions
+        if not self._classifier_initialized or self.classifier is None:
+            actual_rep_dim = reps.shape[1]
+            print(f"   🔧 Creating classifier with input_dim={actual_rep_dim}, output_dim={self.num_classes}")
+            self.classifier = nn.Linear(actual_rep_dim, self.num_classes).to(reps.device)
+            self._classifier_initialized = True
+            
+            # If we have an optimizer, we need to update it with the new parameters
+            if hasattr(self, '_optimizer'):
+                print(f"   🔧 Updating optimizer with new classifier parameters")
+                self._optimizer.param_groups[0]['params'] = list(self.classifier.parameters())
         
         result = self.classifier(reps)
         return result
@@ -499,7 +546,51 @@ class LinearProber2D(nn.Module):
 
 def train_probe_2d(prober, train_loader, val_loader, device):
     criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(prober.classifier.parameters(), lr=5e-6)
+    # Initialize optimizer after classifier is created
+    optimizer = None
+    
+    # Pre-flight validation: Test the prober with a sample batch
+    print("🔍 Pre-flight validation: Testing prober with sample data...")
+    try:
+        # Get a sample batch
+        sample_batch = next(iter(train_loader))
+        sample_xb, sample_yb = sample_batch
+        sample_xb, sample_yb = sample_xb.to(device), sample_yb.to(device)
+        
+        print(f"   Sample input shape: {sample_xb.shape}")
+        print(f"   Sample target shape: {sample_yb.shape}")
+        
+        # Test the reshape operation
+        sample_xb_reshaped = sample_xb.unsqueeze(1)
+        print(f"   Reshaped input shape: {sample_xb_reshaped.shape}")
+        
+        # Test the prober
+        with torch.no_grad():
+            sample_logits = prober(sample_xb_reshaped)
+            print(f"   Sample logits shape: {sample_logits.shape}")
+            
+        # Verify batch sizes match
+        if sample_logits.shape[0] != sample_yb.shape[0]:
+            print(f"❌ PRE-FLIGHT FAILED: Batch size mismatch in sample data!")
+            print(f"   Logits: {sample_logits.shape[0]}, Targets: {sample_yb.shape[0]}")
+            return 0.0, 0.0, 0.0, 0.0
+        
+        print("✅ Pre-flight validation passed!")
+        
+        # Now initialize the optimizer with the correct classifier parameters
+        if prober.classifier is not None:
+            optimizer = torch.optim.Adam(prober.classifier.parameters(), lr=5e-6)
+            prober._optimizer = optimizer  # Store reference for dynamic updates
+            print(f"✅ Optimizer initialized with {len(list(prober.classifier.parameters()))} parameters")
+        else:
+            print(f"❌ Classifier not created during pre-flight validation")
+            return 0.0, 0.0, 0.0, 0.0
+        
+    except Exception as e:
+        print(f"❌ PRE-FLIGHT FAILED: {e}")
+        import traceback
+        traceback.print_exc()
+        return 0.0, 0.0, 0.0, 0.0
     print(f"Number of train samples: {len(train_loader)}, "
           f"Number of val samples: {len(val_loader)}")
 
@@ -510,9 +601,6 @@ def train_probe_2d(prober, train_loader, val_loader, device):
     # Ensure prober parameters require gradients
     for param in prober.parameters():
         param.requires_grad = True
-    
-    failed_batches = 0
-    max_failed_batches = 5  # Prevent infinite loops
     
     for batch_idx, (xb, yb) in enumerate(train_loader):
         # Performance optimization: add progress indicator
@@ -548,15 +636,12 @@ def train_probe_2d(prober, train_loader, val_loader, device):
         
         # Verify batch sizes match (should be fixed now)
         if logits.shape[0] != yb.shape[0]:
-            print(f"❌ Batch size mismatch detected:")
+            print(f"❌ CRITICAL ERROR: Batch size mismatch detected!")
             print(f"   Logits shape: {logits.shape}")
             print(f"   Targets shape: {yb.shape}")
-            print(f"   This should be fixed by the reshape operation above")
-            failed_batches += 1
-            if failed_batches >= max_failed_batches:
-                print(f"❌ Too many failed batches ({failed_batches}), stopping training")
-                break
-            continue
+            print(f"   This indicates a fundamental issue with the data pipeline")
+            print(f"   Stopping training to prevent further issues")
+            return 0.0, 0.0, 0.0, 0.0  # Return zero metrics
         
         # Add timeout protection for loss computation
         try:
@@ -577,32 +662,40 @@ def train_probe_2d(prober, train_loader, val_loader, device):
                 continue  # Skip this batch
                 
         except Exception as e:
-            print(f"❌ Loss computation failed: {e}")
+            print(f" CRITICAL ERROR: Loss computation failed: {e}")
             print(f"   Logits shape: {logits.shape}")
             print(f"   Targets shape: {yb.shape}")
             import traceback
             traceback.print_exc()
-            failed_batches += 1
-            if failed_batches >= max_failed_batches:
-                print(f"❌ Too many failed batches ({failed_batches}), stopping training")
-                break
-            # Skip this batch if loss computation fails
-            continue
+            print(f"   This indicates a fundamental issue with the model or data")
+            print(f"   Stopping training to prevent further issues")
+            return 0.0, 0.0, 0.0, 0.0  # Return zero metrics
         
         # Only proceed with backward pass if loss has gradients
         if loss.requires_grad:
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            # Reset failed batch counter on success
-            failed_batches = 0
+            if optimizer is None:
+                print(f"❌ CRITICAL ERROR: Optimizer not initialized!")
+                print(f"   This should have been created during pre-flight validation")
+                return 0.0, 0.0, 0.0, 0.0
+            try:
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+            except Exception as e:
+                print(f"❌ CRITICAL ERROR: Backward pass failed: {e}")
+                import traceback
+                traceback.print_exc()
+                print(f"   This indicates a fundamental issue with the model or gradients")
+                print(f"   Stopping training to prevent further issues")
+                return 0.0, 0.0, 0.0, 0.0  # Return zero metrics
         else:
-            print(f"⚠️ Skipping backward pass - loss doesn't require grad")
-            failed_batches += 1
-            if failed_batches >= max_failed_batches:
-                print(f"❌ Too many failed batches ({failed_batches}), stopping training")
-                break
-            continue
+            print(f"❌ CRITICAL ERROR: Loss doesn't require grad")
+            print(f"   Loss value: {loss.item()}")
+            print(f"   Logits requires_grad: {logits.requires_grad}")
+            print(f"   Logits grad_fn: {logits.grad_fn}")
+            print(f"   This indicates a fundamental issue with the model setup")
+            print(f"   Stopping training to prevent further issues")
+            return 0.0, 0.0, 0.0, 0.0  # Return zero metrics
         train_loss += loss.item() * xb.size(0)
         train_correct += (logits.argmax(1) == yb).sum().item()
         train_total += xb.size(0)
@@ -961,20 +1054,27 @@ def run_wav2vec2_2d(sessions, sess):
         print(f"Using ModifiedSessionDataset for 2D matrix format [3750 × 93]")
 
         # For downstream tasks, we need to create a probe dataset
+        # Use probe dataset for SSL training (ignore labels, focus on neural patterns)
         train_probe_dataset = SessionDataset(session_paths=train_sessions, include_labels=True,
                                              data_subset_percentage=subset_data, super_regions=True)
         val_probe_dataset = SessionDataset(session_paths=val_sessions, include_labels=True,
                                            data_subset_percentage=subset_data, super_regions=True)
         
+        # Create probe loaders for SSL training
         train_probe_loader = DataLoader(train_probe_dataset, batch_size=16, shuffle=True, pin_memory=True,
                                         num_workers=num_workers)
         val_probe_loader = DataLoader(val_probe_dataset, batch_size=16, shuffle=False, pin_memory=True,
                                           num_workers=num_workers)
-
+        
         train_probe_chance_acc, val_probe_chance_acc = train_probe_dataset.get_chance_accuracy(), \
             val_probe_dataset.get_chance_accuracy()
         print(f"Train Probe Chance Accuracy: {train_probe_chance_acc:.4f}, "
               f"Validation Probe Chance Accuracy: {val_probe_chance_acc:.4f}")
+        
+        # Use probe datasets for SSL training
+        train_loader = train_probe_loader
+        val_loader = val_probe_loader
+        print(f"✅ Using probe dataset for SSL training (ignoring labels, focusing on neural patterns)")
 
     except Exception as e:
         print(f"Error creating datasets: {e}")
@@ -982,48 +1082,31 @@ def run_wav2vec2_2d(sessions, sess):
         return
 
     os.makedirs(f"{output_path}/{session}/ssl_model/", exist_ok=True)
-    max_probe_acc = 0
+    # Focus on SSL training only
 
     for epoch in tqdm(range(train_config['epoch'])):
+        print(f"\n🔄 Epoch {epoch+1}/{train_config['epoch']}")
+        
+        # SSL Training: CNN Feature Extractor + Transformer + Quantization
         train_loss, grad_norm = train_2d(ssl_model, train_loader, optimizer, device)
         val_loss = validate_2d(ssl_model, val_loader, device)
         
-        # For 2D model, we need to access the encoder differently
-        encoder = ssl_model
-        for p in encoder.parameters():
-            p.requires_grad = False
-
-        prober = LinearProber2D(encoder=encoder, rep_dim=w2v2_2d_config.encoder_embed_dim, num_classes=13).to(device)
-
-        (probe_train_loss, probe_train_acc,
-         probe_val_loss, probe_val_acc) = train_probe_2d(
-            prober,
-            train_probe_loader,
-            val_probe_loader,
-            device
-        )
-
-        for p in encoder.parameters():
-            p.requires_grad = True
+        print(f"📊 SSL Results - Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, Grad Norm: {grad_norm:.4f}")
+        
+        # Skip probe training - focus only on SSL
+        print(f"⏭️ Skipping probe training - focusing on SSL only")
 
         print(f"Epoch {epoch + 1}, Train Loss: {train_loss:.4f}, "
               f"Val Loss: {val_loss:.4f}, Grad Norm: {grad_norm:.4f}")
         
         if wandb:
-            wandb.log({"Train Loss": train_loss, "Val Loss": val_loss, "Grad Norm": grad_norm,
+            wandb.log({"SSL Train Loss": train_loss, "SSL Val Loss": val_loss, "Grad Norm": grad_norm,
                        "learning_rate": optimizer.param_groups[0]['lr']})
         
-        print(f"Probe Train Loss: {probe_train_loss:.4f}, Probe Train Accuracy: {probe_train_acc:.4f}, "
-              f"Probe Val Loss: {probe_val_loss:.4f}, Probe Val Accuracy: {probe_val_acc:.4f}")
-        
-        if wandb:
-            wandb.log({"Probe Train Loss": probe_train_loss, "Probe Train Accuracy": probe_train_acc,
-                       "Probe Val Loss": probe_val_loss, "Probe Val Accuracy": probe_val_acc})
-        
-        if probe_val_acc >= max_probe_acc:
-            max_probe_acc = max(max_probe_acc, probe_val_acc)
-            torch.save(ssl_model.state_dict(), f"{output_path}/{session}/ssl_model/best_model.pt")
-            torch.save(w2v2_2d_config, f"{output_path}/{session}/ssl_model/best_config.pt")
+        # Save SSL model every epoch (or you can add your own criteria)
+        torch.save(ssl_model.state_dict(), f"{output_path}/{session}/ssl_model/epoch_{epoch+1}_model.pt")
+        torch.save(w2v2_2d_config, f"{output_path}/{session}/ssl_model/epoch_{epoch+1}_config.pt")
+        print(f"💾 Saved SSL model for epoch {epoch+1}")
 
     print("Training completed!")
 
