@@ -456,7 +456,16 @@ class LinearProber2D(nn.Module):
         
         # For 2D input, we need to handle the spatial dimensions
         try:
-            reps = self.encoder(x, features_only=True)['x']  # Get features from encoder
+            print(f"   🔍 Calling encoder with x: {x.shape}")
+            encoder_output = self.encoder(x, features_only=True)
+            print(f"   🔍 Encoder output type: {type(encoder_output)}")
+            print(f"   🔍 Encoder output keys: {encoder_output.keys() if isinstance(encoder_output, dict) else 'Not a dict'}")
+            
+            if isinstance(encoder_output, dict) and 'x' in encoder_output:
+                reps = encoder_output['x']
+            else:
+                print(f"   ⚠️ Encoder output doesn't have 'x' key, using full output")
+                reps = encoder_output
             
             # Handle different output shapes from encoder
             if len(reps.shape) == 3:  # (B, H*W, D)
@@ -479,6 +488,8 @@ class LinearProber2D(nn.Module):
                 
         except Exception as e:
             print(f"❌ Prober forward pass failed: {e}")
+            import traceback
+            traceback.print_exc()
             # Return zero logits with correct batch size
             return torch.zeros(x.shape[0], self.classifier.out_features, device=x.device)
         
@@ -499,6 +510,9 @@ def train_probe_2d(prober, train_loader, val_loader, device):
     # Ensure prober parameters require gradients
     for param in prober.parameters():
         param.requires_grad = True
+    
+    failed_batches = 0
+    max_failed_batches = 5  # Prevent infinite loops
     
     for batch_idx, (xb, yb) in enumerate(train_loader):
         # Performance optimization: add progress indicator
@@ -538,6 +552,10 @@ def train_probe_2d(prober, train_loader, val_loader, device):
             print(f"   Logits shape: {logits.shape}")
             print(f"   Targets shape: {yb.shape}")
             print(f"   This should be fixed by the reshape operation above")
+            failed_batches += 1
+            if failed_batches >= max_failed_batches:
+                print(f"❌ Too many failed batches ({failed_batches}), stopping training")
+                break
             continue
         
         # Add timeout protection for loss computation
@@ -564,6 +582,10 @@ def train_probe_2d(prober, train_loader, val_loader, device):
             print(f"   Targets shape: {yb.shape}")
             import traceback
             traceback.print_exc()
+            failed_batches += 1
+            if failed_batches >= max_failed_batches:
+                print(f"❌ Too many failed batches ({failed_batches}), stopping training")
+                break
             # Skip this batch if loss computation fails
             continue
         
@@ -572,8 +594,14 @@ def train_probe_2d(prober, train_loader, val_loader, device):
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+            # Reset failed batch counter on success
+            failed_batches = 0
         else:
             print(f"⚠️ Skipping backward pass - loss doesn't require grad")
+            failed_batches += 1
+            if failed_batches >= max_failed_batches:
+                print(f"❌ Too many failed batches ({failed_batches}), stopping training")
+                break
             continue
         train_loss += loss.item() * xb.size(0)
         train_correct += (logits.argmax(1) == yb).sum().item()
