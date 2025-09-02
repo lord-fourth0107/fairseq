@@ -197,6 +197,9 @@ def _infer_2d_shape_from_features(tensor, step):
     """Infer 2D shape from flattened features"""
     batch_size, features = tensor.shape
     
+    if step == 0:
+        print(f"🔍 Inferring 2D shape from {features} features...")
+    
     # Try common neural data configurations
     possible_configs = [
         (3750, 77),   # Common neural data
@@ -219,21 +222,46 @@ def _infer_2d_shape_from_features(tensor, step):
             print(f"✅ 2D input inferred as: [batch, 1, 3750, {width}]")
         return tensor.view(batch_size, 1, 3750, width)
     
-    # Last resort: pad to minimum size and make square-ish
-    min_size = 3
-    if features < min_size * min_size:
-        pad_size = min_size * min_size - features
-        tensor = torch.nn.functional.pad(tensor, (0, pad_size), mode='constant', value=0)
-        features = min_size * min_size
+    # Additional fallback: try to find factors that work
+    def find_factors(n):
+        """Find two factors of n that are as close as possible"""
+        factors = []
+        for i in range(1, int(n**0.5) + 1):
+            if n % i == 0:
+                factors.append((i, n // i))
+        if factors:
+            # Return the pair with the smallest difference
+            return min(factors, key=lambda x: abs(x[0] - x[1]))
+        return None
     
+    factors = find_factors(features)
+    if factors:
+        height, width = factors
+        if step == 0:
+            print(f"✅ 2D input inferred using factors: [batch, 1, {height}, {width}]")
+        return tensor.view(batch_size, 1, height, width)
+    
+    # Last resort: pad to make it work
+    if step == 0:
+        print(f"⚠️ Cannot factorize {features}, padding to make it work...")
+    
+    # Find the next perfect square that's >= features
     sqrt_features = int(features ** 0.5)
-    height = sqrt_features
-    width = features // height
+    if sqrt_features * sqrt_features < features:
+        sqrt_features += 1
+    
+    target_size = sqrt_features * sqrt_features
+    pad_size = target_size - features
+    
+    if pad_size > 0:
+        tensor = torch.nn.functional.pad(tensor, (0, pad_size), mode='constant', value=0)
+        if step == 0:
+            print(f"   Padded {features} -> {target_size} features")
     
     if step == 0:
-        print(f"⚠️ 2D input fallback: [batch, 1, {height}, {width}]")
+        print(f"✅ 2D input fallback: [batch, 1, {sqrt_features}, {sqrt_features}]")
     
-    return tensor.view(batch_size, 1, height, width)
+    return tensor.view(batch_size, 1, sqrt_features, sqrt_features)
 
 def train_2d(model, data_loader, optimizer, device):
     total_loss = 0
