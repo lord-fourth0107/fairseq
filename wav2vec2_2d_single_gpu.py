@@ -441,79 +441,78 @@ class LinearProber2D(nn.Module):
         self.classifier = nn.Linear(rep_dim, num_classes)
 
     def forward(self, x):
-        with torch.no_grad():
-            # Debug: Print input dimensions
-            if not hasattr(self, '_prober_debug_printed'):
-                print(f"🔍 Prober Input Debug:")
-                print(f"   Input x shape: {x.shape}")
-                self._prober_debug_printed = True
+        # Debug: Print input dimensions
+        if not hasattr(self, '_prober_debug_printed'):
+            print(f"🔍 Prober Input Debug:")
+            print(f"   Input x shape: {x.shape}")
+            self._prober_debug_printed = True
+        
+        # Print shape at every step
+        print(f"📊 Prober Forward Pass - Step by Step:")
+        print(f"   1. Input x: {x.shape}")
+        
+        # Check if dimensions are too small for 3x3 kernel
+        if len(x.shape) == 4 and (x.shape[2] < 3 or x.shape[3] < 3):
+            print(f"   ⚠️ Input dimensions too small for 3x3 kernel: {x.shape[2]}x{x.shape[3]}")
+            print(f"   🔄 Padding to minimum size...")
             
-            # Print shape at every step
-            print(f"📊 Prober Forward Pass - Step by Step:")
-            print(f"   1. Input x: {x.shape}")
+            # Pad the input to ensure it's at least 3x3
+            pad_h = max(0, 3 - x.shape[2])
+            pad_w = max(0, 3 - x.shape[3])
+            x = torch.nn.functional.pad(x, (0, pad_w, 0, pad_h), mode='constant', value=0)
             
-            # Check if dimensions are too small for 3x3 kernel
-            if len(x.shape) == 4 and (x.shape[2] < 3 or x.shape[3] < 3):
-                print(f"   ⚠️ Input dimensions too small for 3x3 kernel: {x.shape[2]}x{x.shape[3]}")
-                print(f"   🔄 Padding to minimum size...")
-                
-                # Pad the input to ensure it's at least 3x3
-                pad_h = max(0, 3 - x.shape[2])
-                pad_w = max(0, 3 - x.shape[3])
-                x = torch.nn.functional.pad(x, (0, pad_w, 0, pad_h), mode='constant', value=0)
-                
-                print(f"   2. After padding: {x.shape}")
+            print(f"   2. After padding: {x.shape}")
+        else:
+            print(f"   2. No padding needed: {x.shape}")
+        
+        # For 2D input, we need to handle the spatial dimensions
+        try:
+            print(f"   3. Calling encoder with x: {x.shape}")
+            reps = self.encoder(x, features_only=True)['x']  # Get features from encoder
+            print(f"   4. Encoder output reps: {reps.shape}")
+            
+            # Handle different output shapes from encoder
+            if len(reps.shape) == 3:  # (B, H*W, D)
+                print(f"   5. 3D output detected, pooling over dim=1")
+                # Average pooling over spatial dimensions: (B, H*W, D) -> (B, D)
+                reps = reps.mean(dim=1)
+                print(f"   6. After pooling: {reps.shape}")
+            elif len(reps.shape) == 4:  # (B, D, H, W) - 2D features
+                print(f"   5. 4D output detected, global average pooling")
+                # Global average pooling: (B, D, H, W) -> (B, D)
+                reps = reps.mean(dim=(2, 3))
+                print(f"   6. After pooling: {reps.shape}")
+            elif len(reps.shape) == 2:  # (B, D) - already pooled
+                print(f"   5. 2D output detected, already pooled: {reps.shape}")
+                # Already in the right format
+                pass
             else:
-                print(f"   2. No padding needed: {x.shape}")
+                print(f"   5. Unknown output shape {reps.shape}, flattening")
+                # Fallback: flatten and use first dimension
+                reps = reps.view(reps.shape[0], -1)
+                print(f"   6. After flattening: {reps.shape}")
             
-            # For 2D input, we need to handle the spatial dimensions
-            try:
-                print(f"   3. Calling encoder with x: {x.shape}")
-                reps = self.encoder(x, features_only=True)['x']  # Get features from encoder
-                print(f"   4. Encoder output reps: {reps.shape}")
+            # Ensure we return the same batch size as input
+            if reps.shape[0] != x.shape[0]:
+                print(f"   ⚠️ Batch size mismatch: input {x.shape[0]} vs output {reps.shape[0]}")
+                print(f"   🔄 Repeating output to match input batch size...")
+                # Repeat the output to match input batch size
+                reps = reps.repeat(x.shape[0], 1)
+                print(f"   7. After batch size fix: {reps.shape}")
+            else:
+                print(f"   7. Batch sizes match: {reps.shape}")
                 
-                # Handle different output shapes from encoder
-                if len(reps.shape) == 3:  # (B, H*W, D)
-                    print(f"   5. 3D output detected, pooling over dim=1")
-                    # Average pooling over spatial dimensions: (B, H*W, D) -> (B, D)
-                    reps = reps.mean(dim=1)
-                    print(f"   6. After pooling: {reps.shape}")
-                elif len(reps.shape) == 4:  # (B, D, H, W) - 2D features
-                    print(f"   5. 4D output detected, global average pooling")
-                    # Global average pooling: (B, D, H, W) -> (B, D)
-                    reps = reps.mean(dim=(2, 3))
-                    print(f"   6. After pooling: {reps.shape}")
-                elif len(reps.shape) == 2:  # (B, D) - already pooled
-                    print(f"   5. 2D output detected, already pooled: {reps.shape}")
-                    # Already in the right format
-                    pass
-                else:
-                    print(f"   5. Unknown output shape {reps.shape}, flattening")
-                    # Fallback: flatten and use first dimension
-                    reps = reps.view(reps.shape[0], -1)
-                    print(f"   6. After flattening: {reps.shape}")
-                
-                # Ensure we return the same batch size as input
-                if reps.shape[0] != x.shape[0]:
-                    print(f"   ⚠️ Batch size mismatch: input {x.shape[0]} vs output {reps.shape[0]}")
-                    print(f"   🔄 Repeating output to match input batch size...")
-                    # Repeat the output to match input batch size
-                    reps = reps.repeat(x.shape[0], 1)
-                    print(f"   7. After batch size fix: {reps.shape}")
-                else:
-                    print(f"   7. Batch sizes match: {reps.shape}")
-                    
-            except Exception as e:
-                print(f"❌ Prober forward pass failed: {e}")
-                import traceback
-                traceback.print_exc()
-                # Return zero logits with correct batch size
-                return torch.zeros(x.shape[0], self.classifier.out_features, device=x.device)
+        except Exception as e:
+            print(f"❌ Prober forward pass failed: {e}")
+            import traceback
+            traceback.print_exc()
+            # Return zero logits with correct batch size
+            return torch.zeros(x.shape[0], self.classifier.out_features, device=x.device)
+        
+        print(f"   8. Final reps before classifier: {reps.shape}")
+        result = self.classifier(reps)
+        print(f"   9. Final classifier output: {result.shape}")
             
-            print(f"   8. Final reps before classifier: {reps.shape}")
-            result = self.classifier(reps)
-            print(f"   9. Final classifier output: {result.shape}")
-                
         return result
 
 
@@ -527,6 +526,10 @@ def train_probe_2d(prober, train_loader, val_loader, device):
     val_loss, val_correct, val_total = 0.0, 0, 0
 
     prober.train()
+    # Ensure prober parameters require gradients
+    for param in prober.parameters():
+        param.requires_grad = True
+    
     for batch_idx, (xb, yb) in enumerate(train_loader):
         # Performance optimization: add progress indicator
         if batch_idx % 100 == 0:
@@ -587,16 +590,38 @@ def train_probe_2d(prober, train_loader, val_loader, device):
                 print(f"   Targets shape: {yb.shape}")
                 continue
             
+            # Ensure logits requires grad
+            if not logits.requires_grad:
+                print(f"⚠️ Logits don't require grad, enabling...")
+                logits = logits.requires_grad_(True)
+            
             loss = criterion(logits, yb)
+            
+            # Ensure loss requires grad
+            if not loss.requires_grad:
+                print(f"⚠️ Loss doesn't require grad, this will cause backward() to fail")
+                print(f"   Loss value: {loss.item()}")
+                print(f"   Logits requires_grad: {logits.requires_grad}")
+                print(f"   Logits grad_fn: {logits.grad_fn}")
+                continue  # Skip this batch
+                
         except Exception as e:
             print(f"❌ Loss computation failed: {e}")
             print(f"   Logits shape: {logits.shape}")
             print(f"   Targets shape: {yb.shape}")
+            import traceback
+            traceback.print_exc()
             # Skip this batch if loss computation fails
             continue
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        
+        # Only proceed with backward pass if loss has gradients
+        if loss.requires_grad:
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+        else:
+            print(f"⚠️ Skipping backward pass - loss doesn't require grad")
+            continue
         train_loss += loss.item() * xb.size(0)
         train_correct += (logits.argmax(1) == yb).sum().item()
         train_total += xb.size(0)
@@ -653,10 +678,18 @@ def train_probe_2d(prober, train_loader, val_loader, device):
                 print(f"❌ Val batch size mismatch still exists after adjustment!")
                 continue
             
-            loss = criterion(logits, yb)
-            val_loss += loss.item() * xb.size(0)
-            val_correct += (logits.argmax(1) == yb).sum().item()
-            val_total += xb.size(0)
+            try:
+                loss = criterion(logits, yb)
+                val_loss += loss.item() * xb.size(0)
+                val_correct += (logits.argmax(1) == yb).sum().item()
+                val_total += xb.size(0)
+            except Exception as e:
+                print(f"❌ Val loss computation failed: {e}")
+                print(f"   Logits shape: {logits.shape}")
+                print(f"   Targets shape: {yb.shape}")
+                import traceback
+                traceback.print_exc()
+                continue  # Skip this batch
 
     train_avg_loss = train_loss / train_total
     train_acc = train_correct / train_total
