@@ -1286,9 +1286,21 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
             x = features  # Use original features without masking
             y = unmasked_features  # Use original unmasked features
 
-        x, layer_results = self.encoder(
-            x, padding_mask=padding_mask, layer=layer, corpus_key=corpus_key
-        )
+        print(f"🔍 Before encoder call:")
+        print(f"   x shape: {x.shape}")
+        print(f"   padding_mask: {padding_mask}")
+        print(f"   mask_indices: {mask_indices}")
+        
+        try:
+            x, layer_results = self.encoder(
+                x, padding_mask=padding_mask, layer=layer, corpus_key=corpus_key
+            )
+            print(f"🔍 Encoder call successful:")
+            print(f"   x output shape: {x.shape}")
+            print(f"   layer_results length: {len(layer_results) if layer_results else 'None'}")
+        except Exception as e:
+            print(f"❌ Encoder call failed: {e}")
+            raise
 
         if features_only:
             return {
@@ -1298,17 +1310,30 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
                 "layer_results": layer_results,
             }
 
+        print(f"🔍 After encoder, before quantizer:")
+        print(f"   x shape: {x.shape}")
+        print(f"   unmasked_features shape: {unmasked_features.shape}")
+        print(f"   quantizer exists: {self.quantizer is not None}")
+        
         if self.quantizer:
+            print(f"🔍 Processing quantizer...")
             if self.negatives_from_everywhere:
-                q = self.quantizer(unmasked_features, produce_targets=False)
-                y = q["x"]
-                num_vars = q["num_vars"]
-                code_ppl = q["code_perplexity"]
-                prob_ppl = q["prob_perplexity"]
-                curr_temp = q["temp"]
-                # Recreate project_q if needed
-                self._recreate_project_q_if_needed(y)
-                y = self.project_q(y)
+                print(f"   Using negatives_from_everywhere")
+                try:
+                    q = self.quantizer(unmasked_features, produce_targets=False)
+                    y = q["x"]
+                    num_vars = q["num_vars"]
+                    code_ppl = q["code_perplexity"]
+                    prob_ppl = q["prob_perplexity"]
+                    curr_temp = q["temp"]
+                    print(f"   Quantizer output y shape: {y.shape}")
+                    # Recreate project_q if needed
+                    self._recreate_project_q_if_needed(y)
+                    y = self.project_q(y)
+                    print(f"   After project_q: {y.shape}")
+                except Exception as e:
+                    print(f"❌ Quantizer processing failed: {e}")
+                    raise
 
                 negs, _ = self.sample_negatives(
                     y,
