@@ -101,6 +101,9 @@ def compute_mask_inputs_2d(model, input_values, device):
             features_reshaped = features_reshaped.unsqueeze(1)  # (B, 1, C*H*W)
             actual_seq_len = features_reshaped.shape[1]  # This is 1 (single time step)
             
+            # For single time step, we need to handle masking differently
+            # Since we have T=1, we can either mask the entire vector or not
+            
         except Exception as e:
             # Fallback: use a reasonable default sequence length
             print(f"⚠️ Feature extractor failed, using fallback sequence length: {e}")
@@ -110,11 +113,17 @@ def compute_mask_inputs_2d(model, input_values, device):
         
         # Compute masking for the actual sequence length
         mask_prob = 0.2  # You can make this configurable
-        mask_length = 10
         
-        # Create random masks with correct sequence length
-        mask = torch.rand(batch_size, actual_seq_len, device=device) < mask_prob
-        mask_time_indices = mask
+        # For single time step (T=1), we mask the entire vector or not
+        if actual_seq_len == 1:
+            # With T=1, we either mask the entire vector or not
+            mask = torch.rand(batch_size, device=device) < mask_prob
+            mask_time_indices = mask.unsqueeze(1)  # (B, 1)
+        else:
+            # For multiple time steps, use the original logic
+            mask_length = 10
+            mask = torch.rand(batch_size, actual_seq_len, device=device) < mask_prob
+            mask_time_indices = mask
         
         # Debug: Print masking information (only for first call)
         if not hasattr(compute_mask_inputs_2d, '_debug_printed'):
@@ -125,7 +134,12 @@ def compute_mask_inputs_2d(model, input_values, device):
             print(f"   Actual sequence length: {actual_seq_len}")
             print(f"   Mask shape: {mask_time_indices.shape}")
             print(f"   Masked tokens per sequence: {mask_time_indices.sum(dim=1)}")
-            print(f"   Expected model output: [batch, {actual_seq_len}, {C * H_out * W_out}] (single time step with flattened features)")
+            if actual_seq_len == 1:
+                print(f"   Expected model output: [batch, {actual_seq_len}, {C * H_out * W_out}] (single time step with flattened features)")
+                print(f"   Masking strategy: Mask entire vector or not (T=1)")
+            else:
+                print(f"   Expected model output: [batch, {actual_seq_len}, {C * H_out * W_out}] (multiple time steps)")
+                print(f"   Masking strategy: Standard sequence masking")
             compute_mask_inputs_2d._debug_printed = True
         
         # Ensure at least some tokens are masked

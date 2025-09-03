@@ -1009,6 +1009,18 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
             from fairseq.modules import LayerNorm
             self.layer_norm = LayerNorm(correct_dim).to(features.device)
             
+            # Try again with the recreated layer_norm
+            try:
+                features = self.layer_norm(features)
+                if not hasattr(self, '_layer_norm_debug_printed'):
+                    print(f"   ✅ Layer_norm recreated successfully with dim {correct_dim}")
+            except Exception as e2:
+                if not hasattr(self, '_layer_norm_debug_printed'):
+                    print(f"   ❌ Layer_norm recreation failed: {e2}")
+                    print(f"   🔄 Skipping layer_norm...")
+                # Skip layer_norm if it still fails
+                pass
+            
             if not hasattr(self, '_layer_norm_debug_printed'):
                 print(f"   ✅ Recreated layer_norm with dim: {correct_dim}")
             
@@ -1062,8 +1074,8 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
                     self._post_extract_debug_printed = True
                 
                 # Recreate post_extract_proj with correct dimensions
-                if len(features.shape) == 3:  # [B, T, D]
-                    correct_input_size = features.shape[-1]
+                if len(features.shape) == 3:  # [B, T, D] - our new format
+                    correct_input_size = features.shape[-1]  # C*H*W
                 elif len(features.shape) == 4:  # [B, C, H, W]
                     correct_input_size = features.shape[1]
                 else:
@@ -1080,6 +1092,8 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
                 # Try again with the recreated layer
                 try:
                     features = self.post_extract_proj(features)
+                    if not hasattr(self, '_post_extract_debug_printed'):
+                        print(f"   ✅ Post_extract_proj recreated successfully")
                 except RuntimeError as e3:
                     if not hasattr(self, '_post_extract_debug_printed'):
                         print(f"   ❌ Post extract proj still failed: {e3}")
