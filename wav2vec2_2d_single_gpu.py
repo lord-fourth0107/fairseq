@@ -931,7 +931,12 @@ def run_wav2vec2_2d(sessions, sess):
         extractor_mode="default",
         
         # Adaptive pooling after flattening to standardize dimensions
-        flattened_pool_dim=512  # Standardize to 512 dimensions after flattening
+        flattened_pool_dim=512,  # Standardize to 512 dimensions after flattening
+        
+        # Disable negative sampling for single time step (flattened) approach
+        num_negatives=0,  # No negative sampling since we have single time step
+        cross_sample_negatives=0,  # No cross-sample negatives
+        codebook_negatives=0,  # No codebook negatives
     )
     
     train_config = {'epoch': epochs, 'lr': 1e-5}
