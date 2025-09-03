@@ -1014,6 +1014,7 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
                 features = self.layer_norm(features)
                 if not hasattr(self, '_layer_norm_debug_printed'):
                     print(f"   ✅ Layer_norm recreated successfully with dim {correct_dim}")
+                    print(f"   New layer_norm normalized_shape: {self.layer_norm.normalized_shape}")
             except Exception as e2:
                 if not hasattr(self, '_layer_norm_debug_printed'):
                     print(f"   ❌ Layer_norm recreation failed: {e2}")
@@ -1088,6 +1089,8 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
                 
                 if not hasattr(self, '_post_extract_debug_printed'):
                     print(f"   ✅ Recreated post_extract_proj: {correct_input_size} -> {correct_output_size}")
+                    print(f"   New layer input size: {self.post_extract_proj.in_features}")
+                    print(f"   New layer output size: {self.post_extract_proj.out_features}")
                 
                 # Try again with the recreated layer
                 try:
