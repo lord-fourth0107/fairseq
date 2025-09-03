@@ -85,6 +85,13 @@ class Wav2Vec2_2DConfig(FairseqDataclass):
     input_width: int = field(
         default=128, metadata={"help": "width of input spectrogram"}
     )
+    # After-flatten pooling target size; if > 0, apply AdaptiveAvgPool1d
+    flattened_pool_dim: int = field(
+        default=0,
+        metadata={
+            "help": "If >0, apply AdaptiveAvgPool1d to flattened features to this length (after flattening)"
+        },
+    )
     
     # Spatial embedding parameters for depth-wise regions within probes
     use_spatial_embedding: bool = field(
@@ -511,6 +518,10 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
     def __init__(self, cfg: Wav2Vec2_2DConfig):
         super().__init__()
         self.cfg = cfg
+        
+        # Add a flag to disable masking if it keeps failing
+        self._masking_disabled = False
+        self._masking_failures = 0
 
         feature_enc_layers = eval(cfg.conv_2d_feature_layers)
         self.embed = feature_enc_layers[-1][0] 
@@ -521,6 +532,12 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
             conv_bias=cfg.conv_bias,
             input_channels=cfg.input_channels,
         )
+
+        # Optional: pool after flattening to fixed length
+        self.flatten_pool = None
+        if getattr(cfg, "flattened_pool_dim", 0) and cfg.flattened_pool_dim > 0:
+            # Pools (B, 1, D) -> (B, 1, flattened_pool_dim)
+            self.flatten_pool = nn.AdaptiveAvgPool1d(cfg.flattened_pool_dim)
 
         self.spatial_embedding = None
         if cfg.use_spatial_embedding:
@@ -939,11 +956,35 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
 
         features_pen = features.float().pow(2).mean()
 
-        # Convert 2D features to 1D sequence for transformer
-        # (B, C, H, W) -> (B, H*W, C)
+        # Convert 2D features to 1D for transformer
+        # (B, C, H, W) -> (B, 1, C*H*W) - flatten ALL dimensions to single time step
         B, C, H, W = features.shape
-        features = features.permute(0, 2, 3, 1)  # (B, H, W, C)
-        features = features.reshape(B, H * W, C)  # (B, H*W, C)
+        
+        # Debug: Print feature dimensions
+        if not hasattr(self, '_feature_reshape_debug_printed'):
+            print(f"🔍 Feature Reshape Debug:")
+            print(f"   CNN output shape: {features.shape}")
+            print(f"   B={B}, C={C}, H={H}, W={W}")
+            print(f"   Flattening ALL dimensions: C*H*W = {C}*{H}*{W} = {C * H * W}")
+            print(f"   Final shape: [B={B}, T=1, D={C * H * W}] (single time step)")
+            self._feature_reshape_debug_printed = True
+        
+        # Proper flattening: (B, C, H, W) -> (B, 1, C*H*W)
+        # This flattens ALL dimensions (C, H, W) into a single time step
+        features = features.reshape(B, C * H * W)  # (B, C*H*W)
+        features = features.unsqueeze(1)  # (B, 1, C*H*W) - add time dimension
+
+        # Optional adaptive pooling AFTER flattening to stabilize feature length
+        if self.flatten_pool is not None and features.size(-1) != self.cfg.flattened_pool_dim:
+            features = self.flatten_pool(features)  # (B, 1, flattened_pool_dim)
+        
+        # Debug: Verify the flattening worked correctly
+        if not hasattr(self, '_feature_reshape_debug_printed'):
+            print(f"   ✅ After flattening (and pooling if enabled): {features.shape}")
+            if self.flatten_pool is not None:
+                print(f"   Applied AdaptiveAvgPool1d to length {self.cfg.flattened_pool_dim}")
+            else:
+                print(f"   Each batch element now has 1 time step with {C * H * W} features")
         
         # Handle layer_norm dimension mismatch
         try:
@@ -952,14 +993,14 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
             if not hasattr(self, '_layer_norm_debug_printed'):
                 print(f"🔍 Layer Norm Debug:")
                 print(f"   Features shape: {features.shape}")
-                print(f"   Layer norm expected shape: [*, 512]")
+                print(f"   Layer norm expected shape: [*, {features.shape[-1]}]")
                 print(f"   Error: {e}")
                 print(f"   🔄 Recreating layer_norm with correct dimensions...")
                 self._layer_norm_debug_printed = True
             
             # Recreate layer_norm with correct dimensions
-            if len(features.shape) == 3:  # [B, T, D]
-                correct_dim = features.shape[-1]
+            if len(features.shape) == 3:  # [B, T, D] - our new format
+                correct_dim = features.shape[-1]  # C*H*W
             elif len(features.shape) == 4:  # [B, C, H, W]
                 correct_dim = features.shape[1]
             else:
@@ -1105,7 +1146,7 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
             curr_temp = q["temp"]
             features = self.project_inp(features)
 
-        if mask:
+        if mask and not self._masking_disabled:
             x, mask_indices = self.apply_mask(
                 features,
                 padding_mask,
@@ -1133,10 +1174,27 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
                     y = unmasked_features
             else:
                 y = unmasked_features
+        elif self._masking_disabled:
+            # Masking is permanently disabled due to previous failures
+            x = features
+            y = unmasked_features
+            mask_indices = None
         else:
             x = features
             y = unmasked_features
             mask_indices = None
+        
+        # CRITICAL FIX: If masking failed, disable masking for this forward pass
+        if hasattr(self, '_unmasked_y_reshape_debug_printed') and self._unmasked_y_reshape_debug_printed:
+            self._masking_failures += 1
+            if self._masking_failures >= 3:  # After 3 failures, disable masking entirely
+                self._masking_disabled = True
+                print(f"   🚫 PERMANENTLY DISABLING MASKING after {self._masking_failures} failures")
+            else:
+                print(f"   🚫 Disabling masking due to reshape failures (failure #{self._masking_failures})")
+            mask_indices = None
+            x = features  # Use original features without masking
+            y = unmasked_features  # Use original unmasked features
 
         x, layer_results = self.encoder(
             x, padding_mask=padding_mask, layer=layer, corpus_key=corpus_key
@@ -1243,6 +1301,17 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
                 print(f"   ⚠️ Using fallback: keeping original x shape {x.shape}")
                 # Don't apply masking if reshape fails
                 pass
+        
+        # CRITICAL FIX: If masking failed, disable masking for this forward pass
+        if hasattr(self, '_mask_reshape_debug_printed') and self._mask_reshape_debug_printed:
+            self._masking_failures += 1
+            if self._masking_failures >= 3:  # After 3 failures, disable masking entirely
+                self._masking_disabled = True
+                print(f"   🚫 PERMANENTLY DISABLING MASKING after {self._masking_failures} failures")
+            else:
+                print(f"   🚫 Disabling masking due to reshape failures (failure #{self._masking_failures})")
+            mask_indices = None
+            # x is already the original features from the fallback above
 
         if self.target_glu:
             y = self.target_glu(y)

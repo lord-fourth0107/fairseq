@@ -96,9 +96,10 @@ def compute_mask_inputs_2d(model, input_values, device):
             features = model.feature_extractor(input_values)
             B, C, H_out, W_out = features.shape
             
-            # Reshape to sequence format: (B, H*W, C)
-            features_reshaped = features.permute(0, 2, 3, 1).reshape(B, H_out * W_out, C)
-            actual_seq_len = features_reshaped.shape[1]  # This is the correct sequence length
+            # Reshape to flattened format: (B, 1, C*H*W)
+            features_reshaped = features.reshape(B, C * H_out * W_out)
+            features_reshaped = features_reshaped.unsqueeze(1)  # (B, 1, C*H*W)
+            actual_seq_len = features_reshaped.shape[1]  # This is 1 (single time step)
             
         except Exception as e:
             # Fallback: use a reasonable default sequence length
@@ -124,6 +125,7 @@ def compute_mask_inputs_2d(model, input_values, device):
             print(f"   Actual sequence length: {actual_seq_len}")
             print(f"   Mask shape: {mask_time_indices.shape}")
             print(f"   Masked tokens per sequence: {mask_time_indices.sum(dim=1)}")
+            print(f"   Expected model output: [batch, {actual_seq_len}, {C * H_out * W_out}] (single time step with flattened features)")
             compute_mask_inputs_2d._debug_printed = True
         
         # Ensure at least some tokens are masked
