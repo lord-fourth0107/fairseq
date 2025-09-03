@@ -1388,11 +1388,15 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
                 cb_negs = self.project_q(cb_negs)
                 negs = torch.cat([negs, cb_negs], dim=0)
         else:
+            print(f"🔍 No quantizer, processing without quantization...")
+            print(f"   y shape before project_q: {y.shape}")
             # Recreate project_q if needed
             self._recreate_project_q_if_needed(y)
             y = self.project_q(y)
+            print(f"   y shape after project_q: {y.shape}")
 
             if self.negatives_from_everywhere:
+                print(f"   Using negatives_from_everywhere")
                 negs, _ = self.sample_negatives(
                     unmasked_features,
                     y.size(1),
@@ -1402,15 +1406,20 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
                 self._recreate_project_q_if_needed(negs)
                 negs = self.project_q(negs)
             else:
+                print(f"   Using standard negatives")
                 negs, _ = self.sample_negatives(
                     y,
                     y.size(1),
                     padding_count=padding_count,
                 )
 
-        if not is_xla_tensor(x):
+        if not is_xla_tensor(x) and mask_indices is not None:
+            print(f"🔍 Applying masking to x...")
+            print(f"   x shape: {x.shape}")
+            print(f"   mask_indices shape: {mask_indices.shape}")
             try:
                 x = x[mask_indices].view(x.size(0), -1, x.size(-1))
+                print(f"   ✅ Masking applied successfully: {x.shape}")
             except RuntimeError as e:
                 # Debug: Print tensor shapes to understand the mismatch
                 if not hasattr(self, '_mask_reshape_debug_printed'):
@@ -1437,6 +1446,9 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
                 print(f"   🚫 Disabling masking due to reshape failures (failure #{self._masking_failures})")
             mask_indices = None
             # x is already the original features from the fallback above
+        else:
+            print(f"🔍 Masking is disabled, skipping x masking...")
+            print(f"   x shape remains: {x.shape}")
 
         if self.target_glu:
             y = self.target_glu(y)
