@@ -990,13 +990,11 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
         try:
             features = self.layer_norm(features)
         except RuntimeError as e:
-            if not hasattr(self, '_layer_norm_debug_printed'):
-                print(f"🔍 Layer Norm Debug:")
-                print(f"   Features shape: {features.shape}")
-                print(f"   Layer norm expected shape: [*, {features.shape[-1]}]")
-                print(f"   Error: {e}")
-                print(f"   🔄 Recreating layer_norm with correct dimensions...")
-                self._layer_norm_debug_printed = True
+            print(f"🔍 Layer Norm Debug:")
+            print(f"   Features shape: {features.shape}")
+            print(f"   Layer norm expected shape: [*, {features.shape[-1]}]")
+            print(f"   Error: {e}")
+            print(f"   🔄 Recreating layer_norm with correct dimensions...")
             
             # Recreate layer_norm with correct dimensions
             if len(features.shape) == 3:  # [B, T, D] - our new format
@@ -1012,27 +1010,12 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
             # Try again with the recreated layer_norm
             try:
                 features = self.layer_norm(features)
-                if not hasattr(self, '_layer_norm_debug_printed'):
-                    print(f"   ✅ Layer_norm recreated successfully with dim {correct_dim}")
-                    print(f"   New layer_norm normalized_shape: {self.layer_norm.normalized_shape}")
+                print(f"   ✅ Layer_norm recreated successfully with dim {correct_dim}")
+                print(f"   New layer_norm normalized_shape: {self.layer_norm.normalized_shape}")
             except Exception as e2:
-                if not hasattr(self, '_layer_norm_debug_printed'):
-                    print(f"   ❌ Layer_norm recreation failed: {e2}")
-                    print(f"   🔄 Skipping layer_norm...")
+                print(f"   ❌ Layer_norm recreation failed: {e2}")
+                print(f"   🔄 Skipping layer_norm...")
                 # Skip layer_norm if it still fails
-                pass
-            
-            if not hasattr(self, '_layer_norm_debug_printed'):
-                print(f"   ✅ Recreated layer_norm with dim: {correct_dim}")
-            
-            # Try again with the recreated layer_norm
-            try:
-                features = self.layer_norm(features)
-            except RuntimeError as e2:
-                if not hasattr(self, '_layer_norm_debug_printed'):
-                    print(f"   ❌ Layer norm still failed: {e2}")
-                    print(f"   🔄 Skipping layer norm...")
-                # Skip layer norm if it still fails
                 pass
         unmasked_features = features.clone()
 
@@ -1067,12 +1050,10 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
             try:
                 features = self.post_extract_proj(features)
             except RuntimeError as e:
-                if not hasattr(self, '_post_extract_debug_printed'):
-                    print(f"🔍 Post Extract Proj Debug:")
-                    print(f"   Features shape: {features.shape}")
-                    print(f"   Error: {e}")
-                    print(f"   🔄 Recreating post_extract_proj with correct dimensions...")
-                    self._post_extract_debug_printed = True
+                print(f"🔍 Post Extract Proj Debug:")
+                print(f"   Features shape: {features.shape}")
+                print(f"   Error: {e}")
+                print(f"   🔄 Recreating post_extract_proj with correct dimensions...")
                 
                 # Recreate post_extract_proj with correct dimensions
                 if len(features.shape) == 3:  # [B, T, D] - our new format
@@ -1087,20 +1068,17 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
                 import torch.nn as nn
                 self.post_extract_proj = nn.Linear(correct_input_size, correct_output_size).to(features.device)
                 
-                if not hasattr(self, '_post_extract_debug_printed'):
-                    print(f"   ✅ Recreated post_extract_proj: {correct_input_size} -> {correct_output_size}")
-                    print(f"   New layer input size: {self.post_extract_proj.in_features}")
-                    print(f"   New layer output size: {self.post_extract_proj.out_features}")
+                print(f"   ✅ Recreated post_extract_proj: {correct_input_size} -> {correct_output_size}")
+                print(f"   New layer input size: {self.post_extract_proj.in_features}")
+                print(f"   New layer output size: {self.post_extract_proj.out_features}")
                 
                 # Try again with the recreated layer
                 try:
                     features = self.post_extract_proj(features)
-                    if not hasattr(self, '_post_extract_debug_printed'):
-                        print(f"   ✅ Post_extract_proj recreated successfully")
+                    print(f"   ✅ Post_extract_proj recreated successfully")
                 except RuntimeError as e3:
-                    if not hasattr(self, '_post_extract_debug_printed'):
-                        print(f"   ❌ Post extract proj still failed: {e3}")
-                        print(f"   🔄 Skipping post_extract_proj...")
+                    print(f"   ❌ Post extract proj still failed: {e3}")
+                    print(f"   🔄 Skipping post_extract_proj...")
                     # Skip post_extract_proj if it still fails
                     pass
 
