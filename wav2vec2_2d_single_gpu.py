@@ -928,7 +928,10 @@ def run_wav2vec2_2d(sessions, sess):
         layer_norm_first=False,
         feature_grad_mult=1.0,
         conv_bias=False,
-        extractor_mode="default"
+        extractor_mode="default",
+        
+        # Adaptive pooling after flattening to standardize dimensions
+        flattened_pool_dim=512  # Standardize to 512 dimensions after flattening
     )
     
     train_config = {'epoch': epochs, 'lr': 1e-5}

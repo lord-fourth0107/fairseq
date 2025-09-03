@@ -1022,8 +1022,18 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
         features = features.unsqueeze(1)  # (B, 1, C*H*W) - add time dimension
 
         # Optional adaptive pooling AFTER flattening to stabilize feature length
+        print(f"🔍 Adaptive Pooling Debug:")
+        print(f"   Features shape before pooling: {features.shape}")
+        print(f"   flatten_pool exists: {self.flatten_pool is not None}")
+        print(f"   flattened_pool_dim: {getattr(self.cfg, 'flattened_pool_dim', 'NOT_SET')}")
+        print(f"   features.size(-1): {features.size(-1)}")
+        print(f"   Should pool: {self.flatten_pool is not None and features.size(-1) != self.cfg.flattened_pool_dim}")
+        
         if self.flatten_pool is not None and features.size(-1) != self.cfg.flattened_pool_dim:
             features = self.flatten_pool(features)  # (B, 1, flattened_pool_dim)
+            print(f"   ✅ Applied adaptive pooling: {features.shape}")
+        else:
+            print(f"   ⚠️ No adaptive pooling applied")
         
         # Debug: Verify the flattening worked correctly
         if not hasattr(self, '_feature_reshape_debug_printed'):
