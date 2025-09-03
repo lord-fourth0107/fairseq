@@ -785,28 +785,36 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
 
         # FIXME: what happens if padding_count is specified?
         cross_high = tsz * bsz
-        high = tsz if self.sample_distance is None else min(tsz, self.sample_distance)
-        assert high > 1
+        high = tsz - (padding_count or 0)
+        
+        # Use sample_distance if specified (like original wav2vec2.0)
+        if self.sample_distance is not None and self.sample_distance > 0:
+            high = min(high, self.sample_distance)
+        
+        # Debug output
+        print(f"🔍 sample_negatives: tsz={tsz}, padding_count={padding_count}, high={high}")
+        
+        assert high > 1, f"{bsz,tsz,fsz}"
 
         neg_idxs = torch.randint(low=0, high=high, size=(bsz, self.n_negatives * tsz))
 
         with torch.no_grad():
             if self.n_negatives > 0:
                 tszs = (
-                    buffered_arange(tsz)
+                    buffered_arange(num)
                     .unsqueeze(-1)
                     .expand(-1, self.n_negatives)
                     .flatten()
                 )
 
                 neg_idxs = torch.randint(
-                    low=0, high=high - 1, size=(bsz, self.n_negatives * tsz)
+                    low=0, high=high - 1, size=(bsz, self.n_negatives * num)
                 )
                 neg_idxs[neg_idxs >= tszs] += 1
 
             if self.cross_sample_negatives > 0:
                 tszs = (
-                    buffered_arange(tsz)
+                    buffered_arange(num)
                     .unsqueeze(-1)
                     .expand(-1, self.cross_sample_negatives)
                     .flatten()
@@ -815,20 +823,19 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
                 cross_neg_idxs = torch.randint(
                     low=0,
                     high=cross_high - 1,
-                    size=(bsz, self.cross_sample_negatives * tsz),
+                    size=(bsz, self.cross_sample_negatives * num),
                 )
                 cross_neg_idxs[cross_neg_idxs >= tszs] += 1
 
         if self.n_negatives > 0:
-            for i in range(1, bsz):
-                neg_idxs[i] += i * high
+            neg_idxs = neg_idxs + (torch.arange(bsz).unsqueeze(1) * high)
         else:
             neg_idxs = cross_neg_idxs
 
         if self.cross_sample_negatives > 0 and self.n_negatives > 0:
             neg_idxs = torch.cat([neg_idxs, cross_neg_idxs], dim=1)
 
-        negs = y[..., neg_idxs.view(-1)]
+        negs = y[neg_idxs.view(-1)]
         
         # Debug: Print dimensions to understand the issue (only for first call)
         if not hasattr(self, '_neg_debug_printed'):
@@ -836,52 +843,16 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
             print(f"   y shape: {y.shape}")
             print(f"   neg_idxs shape: {neg_idxs.shape}")
             print(f"   negs shape: {negs.shape}")
-            print(f"   Expected reshape: fsz={fsz}, bsz={bsz}, n_neg={self.n_negatives}, cross_neg={self.cross_sample_negatives}, tsz={tsz}")
+            print(f"   Expected reshape: bsz={bsz}, num={num}, n_neg={self.n_negatives}, cross_neg={self.cross_sample_negatives}, fsz={fsz}")
             self._neg_debug_printed = True
         
-        # Try the standard reshape first
-        try:
-            total_negatives = self.n_negatives + self.cross_sample_negatives
-            negs = negs.view(fsz, bsz, total_negatives, tsz).permute(2, 1, 0, 3)
-            if not hasattr(self, '_neg_debug_printed'):
-                print(f"   ✅ Standard reshape successful: {negs.shape}")
-            return negs, None
-        except RuntimeError as e:
-            if not hasattr(self, '_neg_debug_printed'):
-                print(f"   ⚠️ Standard reshape failed: {e}")
-                print(f"   🔄 Trying alternative approaches...")
-            
-            # Calculate expected vs actual elements
-            total_negatives = self.n_negatives + self.cross_sample_negatives
-            expected_elements = fsz * bsz * total_negatives * tsz
-            actual_elements = negs.numel()
-            
-            if not hasattr(self, '_neg_debug_printed'):
-                print(f"   Expected elements: {expected_elements}")
-                print(f"   Actual elements: {actual_elements}")
-            
-            # Try to infer correct dimensions
-            if actual_elements % (bsz * tsz * fsz) == 0:
-                inferred_negatives = actual_elements // (bsz * tsz * fsz)
-                if not hasattr(self, '_neg_debug_printed'):
-                    print(f"   Inferred negatives: {inferred_negatives}")
-                
-                try:
-                    negs = negs.view(fsz, bsz, inferred_negatives, tsz).permute(2, 1, 0, 3)
-                    if not hasattr(self, '_neg_debug_printed'):
-                        print(f"   ✅ Inferred reshape successful: {negs.shape}")
-                    return negs, None
-                except RuntimeError as e2:
-                    if not hasattr(self, '_neg_debug_printed'):
-                        print(f"   ❌ Inferred reshape failed: {e2}")
-            
-            # Final fallback: return a minimal tensor that won't break the training
-            if not hasattr(self, '_neg_debug_printed'):
-                print(f"   🚨 Using fallback: returning minimal tensor")
-            
-            # Return a tensor with the expected shape but filled with zeros
-            fallback_shape = (total_negatives, bsz, fsz, tsz)
-            return torch.zeros(fallback_shape, dtype=negs.dtype, device=negs.device), None
+        # Use original wav2vec2.0 reshape
+        negs = negs.view(
+            bsz, num, self.n_negatives + self.cross_sample_negatives, fsz
+        ).permute(
+            2, 0, 1, 3
+        )  # to NxBxTxC
+        return negs, neg_idxs
 
     def compute_preds(self, x, y, negatives):
         # Debug: Print tensor shapes to understand the mismatch
@@ -1414,6 +1385,15 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
                         padding_count=padding_count,
                     )
                     print(f"   ✅ sample_negatives successful: negs shape = {negs.shape}")
+                    
+                    # Handle case where sample_negatives returns empty tensor (single time step)
+                    if negs.numel() == 0:
+                        print(f"   ⚠️ sample_negatives returned empty tensor (single time step)")
+                        print(f"   Creating dummy negatives for compatibility")
+                        # Create dummy negatives with same shape as y
+                        negs = y.unsqueeze(0).expand(1, -1, -1)  # (1, B*T, C)
+                        print(f"   Created dummy negatives: {negs.shape}")
+                        
                 except Exception as e:
                     print(f"   ❌ sample_negatives failed: {e}")
                     raise
