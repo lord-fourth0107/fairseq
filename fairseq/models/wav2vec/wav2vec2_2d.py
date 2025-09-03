@@ -1407,11 +1407,16 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
                 negs = self.project_q(negs)
             else:
                 print(f"   Using standard negatives")
-                negs, _ = self.sample_negatives(
-                    y,
-                    y.size(1),
-                    padding_count=padding_count,
-                )
+                try:
+                    negs, _ = self.sample_negatives(
+                        y,
+                        y.size(1),
+                        padding_count=padding_count,
+                    )
+                    print(f"   ✅ sample_negatives successful: negs shape = {negs.shape}")
+                except Exception as e:
+                    print(f"   ❌ sample_negatives failed: {e}")
+                    raise
 
         if not is_xla_tensor(x) and mask_indices is not None:
             print(f"🔍 Applying masking to x...")
@@ -1450,18 +1455,38 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
             print(f"🔍 Masking is disabled, skipping x masking...")
             print(f"   x shape remains: {x.shape}")
 
+        print(f"🔍 Final processing steps...")
+        print(f"   x shape before final_proj: {x.shape}")
+        print(f"   y shape: {y.shape}")
+        print(f"   negs shape: {negs.shape}")
+        
         if self.target_glu:
+            print(f"   Applying target_glu...")
             y = self.target_glu(y)
             negs = self.target_glu(negs)
+            print(f"   After target_glu - y: {y.shape}, negs: {negs.shape}")
 
+        print(f"   Applying final_proj...")
         x = self.final_proj(x)
-        x = self.compute_preds(x, y, negs)
+        print(f"   After final_proj: {x.shape}")
+        
+        print(f"   Computing predictions...")
+        try:
+            x = self.compute_preds(x, y, negs)
+            print(f"   ✅ compute_preds successful: {x.shape}")
+        except Exception as e:
+            print(f"   ❌ compute_preds failed: {e}")
+            raise
 
+        print(f"🔍 Creating result dictionary...")
         result = {
             "x": x,
             "padding_mask": padding_mask,
             "features_pen": features_pen,
         }
+        print(f"✅ Model forward pass completed successfully!")
+        print(f"   Final result keys: {list(result.keys())}")
+        print(f"   Final x shape: {result['x'].shape}")
 
         if prob_ppl is not None:
             result["prob_perplexity"] = prob_ppl
