@@ -778,7 +778,7 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
 
     def sample_negatives(self, y, num, padding_count=None):
         if self.n_negatives == 0 and self.cross_sample_negatives == 0:
-            return y.new(0)
+            return y.new(0), None
 
         bsz, tsz, fsz = y.shape
         y = y.view(-1, fsz)  # BTC => (BxT)C
@@ -1311,6 +1311,14 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
                     mask_indices[0].sum(),
                     padding_count=padding_count,
                 )
+                
+                # Handle case where sample_negatives returns empty tensor (single time step)
+                if negs.numel() == 0:
+                    print(f"   ⚠️ sample_negatives returned empty tensor (single time step)")
+                    print(f"   Creating dummy negatives for compatibility")
+                    # Create dummy negatives with same shape as y
+                    negs = y.unsqueeze(0).expand(1, -1, -1)  # (1, B*T, C)
+                    print(f"   Created dummy negatives: {negs.shape}")
                 try:
                     y = y[mask_indices].view(y.size(0), -1, y.size(-1))
                 except RuntimeError as e:
@@ -1346,6 +1354,14 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
                     y.size(1),
                     padding_count=padding_count,
                 )
+                
+                # Handle case where sample_negatives returns empty tensor (single time step)
+                if negs.numel() == 0:
+                    print(f"   ⚠️ sample_negatives returned empty tensor (single time step)")
+                    print(f"   Creating dummy negatives for compatibility")
+                    # Create dummy negatives with same shape as y
+                    negs = y.unsqueeze(0).expand(1, -1, -1)  # (1, B*T, C)
+                    print(f"   Created dummy negatives: {negs.shape}")
 
             if self.codebook_negatives > 0:
                 cb_negs = self.quantizer.sample_from_codebook(
