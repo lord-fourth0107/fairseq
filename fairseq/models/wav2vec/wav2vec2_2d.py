@@ -559,15 +559,23 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
 
         self._calculate_output_dims(cfg)
 
-        # Initialize post_extract_proj - will be recreated dynamically if needed
+        # Initialize post_extract_proj with correct dimensions
+        if getattr(cfg, "flattened_pool_dim", 0) and cfg.flattened_pool_dim > 0:
+            # Use the fixed dimension from adaptive pooling
+            input_dim = cfg.flattened_pool_dim
+        else:
+            # Fall back to old dynamic calculation
+            input_dim = self.embed * self.output_height * self.output_width
+        
         self.post_extract_proj = (
-            nn.Linear(self.embed * self.output_height * self.output_width, cfg.encoder_embed_dim)
-            if self.embed * self.output_height * self.output_width != cfg.encoder_embed_dim and not cfg.quantize_input
+            nn.Linear(input_dim, cfg.encoder_embed_dim)
+            if input_dim != cfg.encoder_embed_dim and not cfg.quantize_input
             else None
         )
         
         # Mark that we need to recreate this layer dynamically
         self._post_extract_proj_needs_recreation = True
+        self._project_q_needs_recreation = True
 
         self.crop_seq_to_multiple = cfg.crop_seq_to_multiple
 
@@ -619,7 +627,13 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
             )
             self.project_q = nn.Linear(vq_dim, final_dim)
         else:
-            self.project_q = nn.Linear(self.embed * self.output_height * self.output_width, final_dim)
+            # Use flattened_pool_dim if available, otherwise fall back to old calculation
+            if getattr(cfg, "flattened_pool_dim", 0) and cfg.flattened_pool_dim > 0:
+                # Use the fixed dimension from adaptive pooling
+                self.project_q = nn.Linear(cfg.flattened_pool_dim, final_dim)
+            else:
+                # Fall back to old dynamic calculation
+                self.project_q = nn.Linear(self.embed * self.output_height * self.output_width, final_dim)
 
         if cfg.quantize_input:
             if cfg.same_quantizer and self.quantizer is not None:
@@ -649,7 +663,15 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
             encoder_cls = ConformerEncoder
 
         self.encoder = encoder_cls(cfg)
-        self.layer_norm = LayerNorm(self.embed * self.output_height * self.output_width)
+        # Initialize layer_norm with correct dimensions
+        if getattr(cfg, "flattened_pool_dim", 0) and cfg.flattened_pool_dim > 0:
+            # Use the fixed dimension from adaptive pooling
+            norm_dim = cfg.flattened_pool_dim
+        else:
+            # Fall back to old dynamic calculation
+            norm_dim = self.embed * self.output_height * self.output_width
+        
+        self.layer_norm = LayerNorm(norm_dim)
         
         # Mark that we need to recreate this layer dynamically
         self._layer_norm_needs_recreation = True
@@ -937,6 +959,24 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
             input_lengths = _conv_out_length(input_lengths, kernel_size, stride)
 
         return input_lengths
+    
+    def _recreate_project_q_if_needed(self, input_tensor):
+        """Recreate project_q layer if dimensions don't match."""
+        if self.project_q is not None:
+            expected_input_size = input_tensor.shape[-1]
+            if self.project_q.in_features != expected_input_size:
+                print(f"🔍 Project_q dimension mismatch detected: layer expects {self.project_q.in_features}, got {expected_input_size}")
+                print(f"   🔄 Proactively recreating project_q...")
+                
+                # Recreate project_q with correct dimensions
+                correct_output_size = self.project_q.out_features  # Keep the same output size
+                
+                import torch.nn as nn
+                self.project_q = nn.Linear(expected_input_size, correct_output_size).to(input_tensor.device)
+                
+                print(f"   ✅ Proactively recreated project_q: {expected_input_size} -> {correct_output_size}")
+                print(f"   New project_q input size: {self.project_q.in_features}")
+                print(f"   New project_q output size: {self.project_q.out_features}")
 
     def forward(
         self,
@@ -1256,6 +1296,8 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
                 code_ppl = q["code_perplexity"]
                 prob_ppl = q["prob_perplexity"]
                 curr_temp = q["temp"]
+                # Recreate project_q if needed
+                self._recreate_project_q_if_needed(y)
                 y = self.project_q(y)
 
                 negs, _ = self.sample_negatives(
@@ -1289,6 +1331,8 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
                 prob_ppl = q["prob_perplexity"]
                 curr_temp = q["temp"]
 
+                # Recreate project_q if needed
+                self._recreate_project_q_if_needed(y)
                 y = self.project_q(y)
 
                 negs, _ = self.sample_negatives(
@@ -1304,9 +1348,13 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
                 cb_negs = cb_negs.view(
                     self.codebook_negatives, y.size(0), y.size(1), -1
                 )
+                # Recreate project_q if needed
+                self._recreate_project_q_if_needed(cb_negs)
                 cb_negs = self.project_q(cb_negs)
                 negs = torch.cat([negs, cb_negs], dim=0)
         else:
+            # Recreate project_q if needed
+            self._recreate_project_q_if_needed(y)
             y = self.project_q(y)
 
             if self.negatives_from_everywhere:
@@ -1315,6 +1363,8 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
                     y.size(1),
                     padding_count=padding_count,
                 )
+                # Recreate project_q if needed
+                self._recreate_project_q_if_needed(negs)
                 negs = self.project_q(negs)
             else:
                 negs, _ = self.sample_negatives(
