@@ -559,11 +559,15 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
 
         self._calculate_output_dims(cfg)
 
+        # Initialize post_extract_proj - will be recreated dynamically if needed
         self.post_extract_proj = (
             nn.Linear(self.embed * self.output_height * self.output_width, cfg.encoder_embed_dim)
             if self.embed * self.output_height * self.output_width != cfg.encoder_embed_dim and not cfg.quantize_input
             else None
         )
+        
+        # Mark that we need to recreate this layer dynamically
+        self._post_extract_proj_needs_recreation = True
 
         self.crop_seq_to_multiple = cfg.crop_seq_to_multiple
 
@@ -646,6 +650,9 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
 
         self.encoder = encoder_cls(cfg)
         self.layer_norm = LayerNorm(self.embed * self.output_height * self.output_width)
+        
+        # Mark that we need to recreate this layer dynamically
+        self._layer_norm_needs_recreation = True
 
         self.target_glu = None
         if cfg.target_glu:
@@ -987,8 +994,25 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
                 print(f"   Each batch element now has 1 time step with {C * H * W} features")
         
         # Handle layer_norm dimension mismatch
+        print(f"🔍 Before layer_norm: features shape = {features.shape}")
+        print(f"🔍 layer_norm expects: {self.layer_norm.normalized_shape}")
+        
+        # Proactively check if dimensions match
+        expected_dim = features.shape[-1]
+        if self.layer_norm.normalized_shape[0] != expected_dim:
+            print(f"🔍 Layer norm dimension mismatch detected: layer expects {self.layer_norm.normalized_shape[0]}, got {expected_dim}")
+            print(f"   🔄 Proactively recreating layer_norm...")
+            
+            # Recreate layer_norm with correct dimensions
+            from fairseq.modules import LayerNorm
+            self.layer_norm = LayerNorm(expected_dim).to(features.device)
+            
+            print(f"   ✅ Proactively recreated layer_norm with dim: {expected_dim}")
+            print(f"   New layer_norm normalized_shape: {self.layer_norm.normalized_shape}")
+        
         try:
             features = self.layer_norm(features)
+            print(f"🔍 layer_norm success: output shape = {features.shape}")
         except RuntimeError as e:
             print(f"🔍 Layer Norm Debug:")
             print(f"   Features shape: {features.shape}")
@@ -1046,9 +1070,30 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
             if padding_mask is not None:
                 padding_mask = padding_mask[:, :-time_steps_to_drop]
 
+        print(f"🔍 Before post_extract_proj: features shape = {features.shape}")
         if self.post_extract_proj is not None:
+            print(f"🔍 post_extract_proj exists: {self.post_extract_proj.in_features} -> {self.post_extract_proj.out_features}")
+            
+            # Proactively check if dimensions match
+            expected_input_size = features.shape[-1]
+            if self.post_extract_proj.in_features != expected_input_size:
+                print(f"🔍 Dimension mismatch detected: layer expects {self.post_extract_proj.in_features}, got {expected_input_size}")
+                print(f"   🔄 Proactively recreating post_extract_proj...")
+                
+                # Recreate post_extract_proj with correct dimensions
+                correct_input_size = expected_input_size
+                correct_output_size = self.cfg.encoder_embed_dim
+                
+                import torch.nn as nn
+                self.post_extract_proj = nn.Linear(correct_input_size, correct_output_size).to(features.device)
+                
+                print(f"   ✅ Proactively recreated post_extract_proj: {correct_input_size} -> {correct_output_size}")
+                print(f"   New layer input size: {self.post_extract_proj.in_features}")
+                print(f"   New layer output size: {self.post_extract_proj.out_features}")
+            
             try:
                 features = self.post_extract_proj(features)
+                print(f"🔍 post_extract_proj success: output shape = {features.shape}")
             except RuntimeError as e:
                 print(f"🔍 Post Extract Proj Debug:")
                 print(f"   Features shape: {features.shape}")
