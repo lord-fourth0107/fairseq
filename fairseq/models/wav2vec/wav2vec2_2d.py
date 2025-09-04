@@ -1267,8 +1267,7 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
                     if not hasattr(self, '_unmasked_y_reshape_debug_printed'):
                         print(f"🔍 Unmasked Y Reshape Debug:")
                         print(f"   unmasked_features shape: {unmasked_features.shape}")
-                        print(f"   mask_indices shape: {mask_indices.shape}")
-                        print(f"   unmasked_features[mask_indices] shape: {unmasked_features[mask_indices].shape}")
+                        # mask_indices details suppressed
                         print(f"   Expected view: [{unmasked_features.size(0)}, -1, {unmasked_features.size(-1)}]")
                         print(f"   Error: {e}")
                         self._unmasked_y_reshape_debug_printed = True
@@ -1303,7 +1302,7 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
         print(f"🔍 Before encoder call:")
         print(f"   x shape: {x.shape}")
         print(f"   padding_mask: {padding_mask}")
-        print(f"   mask_indices: {mask_indices}")
+        # mask_indices details suppressed
         
         try:
             x, layer_results = self.encoder(
@@ -1369,8 +1368,7 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
                     if not hasattr(self, '_y_mask_reshape_debug_printed'):
                         print(f"🔍 Y Mask Reshape Debug:")
                         print(f"   y shape: {y.shape}")
-                        print(f"   mask_indices shape: {mask_indices.shape}")
-                        print(f"   y[mask_indices] shape: {y[mask_indices].shape}")
+                        # mask_indices details suppressed
                         print(f"   Expected view: [{y.size(0)}, -1, {y.size(-1)}]")
                         print(f"   Error: {e}")
                         self._y_mask_reshape_debug_printed = True
@@ -1460,7 +1458,7 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
         if not is_xla_tensor(x) and mask_indices is not None:
             print(f"🔍 Applying masking to x...")
             print(f"   x shape: {x.shape}")
-            print(f"   mask_indices shape: {mask_indices.shape}")
+            # mask_indices details suppressed
             try:
                 x = x[mask_indices].view(x.size(0), -1, x.size(-1))
                 print(f"   ✅ Masking applied successfully: {x.shape}")
@@ -1469,8 +1467,7 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
                 if not hasattr(self, '_mask_reshape_debug_printed'):
                     print(f"🔍 Mask Reshape Debug:")
                     print(f"   x shape: {x.shape}")
-                    print(f"   mask_indices shape: {mask_indices.shape}")
-                    print(f"   x[mask_indices] shape: {x[mask_indices].shape}")
+                    # mask_indices details suppressed
                     print(f"   Expected view: [{x.size(0)}, -1, {x.size(-1)}]")
                     print(f"   Error: {e}")
                     self._mask_reshape_debug_printed = True

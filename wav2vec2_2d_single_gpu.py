@@ -301,6 +301,9 @@ def train_2d(model, data_loader, optimizer, device):
     
     # Performance optimization: limit debug prints to first few steps
     max_debug_steps = 3
+    # Logging
+    log_interval = 50
+    running_loss = 0.0
     
     # Memory optimization: clear cache periodically
     torch.cuda.empty_cache()
@@ -444,10 +447,18 @@ def train_2d(model, data_loader, optimizer, device):
             continue
 
         total_loss += loss.item()
+        running_loss += loss.item()
+
+        # Periodic loss logging
+        if step > 0 and (step % log_interval == 0 or step == len(data_loader) - 1):
+            avg_running = running_loss / (log_interval if step % log_interval == 0 else (step % log_interval))
+            print(f"🧮 Train step {step}/{len(data_loader)} | loss: {avg_running:.4f} | grad_norm: {grad_norm:.3f}")
+            running_loss = 0.0
 
     avg_loss = total_loss / len(data_loader)
     avg_grad = sum(grad_norms) / len(grad_norms) if grad_norms else 0.0
 
+    print(f"✅ Epoch train avg loss: {avg_loss:.4f} | avg grad_norm: {avg_grad:.3f}")
     return avg_loss, avg_grad
 
 
