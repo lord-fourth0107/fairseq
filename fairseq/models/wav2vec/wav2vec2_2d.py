@@ -539,6 +539,20 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
             # Pools (B, 1, D) -> (B, 1, flattened_pool_dim)
             self.flatten_pool = nn.AdaptiveAvgPool1d(cfg.flattened_pool_dim)
 
+        # 1D CNN to create multiple time steps after adaptive pooling
+        self.temporal_conv1d = None
+        if getattr(cfg, "temporal_conv1d_enabled", False):
+            # 1D CNN to expand single time step to multiple time steps
+            # Input: (B, 1, flattened_pool_dim) -> Output: (B, temporal_steps, flattened_pool_dim)
+            temporal_steps = getattr(cfg, "temporal_steps", 100)
+            self.temporal_conv1d = nn.Sequential(
+                nn.Conv1d(cfg.flattened_pool_dim, cfg.flattened_pool_dim, kernel_size=3, padding=1),
+                nn.ReLU(),
+                nn.Conv1d(cfg.flattened_pool_dim, cfg.flattened_pool_dim, kernel_size=3, padding=1),
+                nn.ReLU(),
+                nn.AdaptiveAvgPool1d(temporal_steps)  # Ensure exact temporal_steps output
+            )
+
         self.spatial_embedding = None
         if cfg.use_spatial_embedding:
             # Spatial embeddings represent depth regions within probes
@@ -1005,6 +1019,21 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
             print(f"   ✅ Applied adaptive pooling: {features.shape}")
         else:
             print(f"   ⚠️ No adaptive pooling applied")
+
+        # Apply 1D CNN to create multiple time steps after adaptive pooling
+        if self.temporal_conv1d is not None:
+            print(f"🔍 Temporal Conv1D Debug:")
+            print(f"   Features shape before temporal conv: {features.shape}")
+            
+            # Reshape for Conv1d: (B, 1, D) -> (B, D, 1) -> (B, D, temporal_steps)
+            features_1d = features.transpose(1, 2)  # (B, D, 1)
+            features_temporal = self.temporal_conv1d(features_1d)  # (B, D, temporal_steps)
+            features = features_temporal.transpose(1, 2)  # (B, temporal_steps, D)
+            
+            print(f"   ✅ Applied temporal conv1d: {features.shape}")
+            print(f"   Created {features.shape[1]} time steps from single flattened vector")
+        else:
+            print(f"   ⚠️ No temporal conv1d applied, keeping single time step")
         
         # Debug: Verify the flattening worked correctly
         if not hasattr(self, '_feature_reshape_debug_printed'):
@@ -1406,8 +1435,8 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
                     if negs.numel() == 0:
                         print(f"   ⚠️ sample_negatives returned empty tensor (single time step)")
                         print(f"   Creating dummy negatives for compatibility")
-                        # Create dummy negatives with same shape as y
-                        negs = y.unsqueeze(0).expand(1, -1, -1)  # (1, B*T, C)
+                        # Create dummy negatives with proper shape: (1, batch, time, features)
+                        negs = torch.randn(1, y.shape[0], y.shape[1], y.shape[2], device=y.device, dtype=y.dtype)
                         print(f"   Created dummy negatives: {negs.shape}")
                         
                 except Exception as e:

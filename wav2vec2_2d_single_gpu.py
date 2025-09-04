@@ -99,10 +99,17 @@ def compute_mask_inputs_2d(model, input_values, device):
             # Reshape to flattened format: (B, 1, C*H*W)
             features_reshaped = features.reshape(B, C * H_out * W_out)
             features_reshaped = features_reshaped.unsqueeze(1)  # (B, 1, C*H*W)
-            actual_seq_len = features_reshaped.shape[1]  # This is 1 (single time step)
             
-            # For single time step, we need to handle masking differently
-            # Since we have T=1, we can either mask the entire vector or not
+            # Check if temporal expansion will be applied
+            temporal_steps = getattr(model.cfg, 'temporal_steps', 1) if hasattr(model, 'cfg') else 1
+            has_temporal_conv = getattr(model.cfg, 'temporal_conv1d_enabled', False) if hasattr(model, 'cfg') else False
+            
+            if has_temporal_conv:
+                actual_seq_len = temporal_steps  # Multiple time steps from 1D CNN
+                print(f"   Using temporal expansion: {temporal_steps} time steps")
+            else:
+                actual_seq_len = features_reshaped.shape[1]  # This is 1 (single time step)
+                print(f"   No temporal expansion: {actual_seq_len} time steps")
             
         except Exception as e:
             # Fallback: use a reasonable default sequence length
@@ -114,16 +121,21 @@ def compute_mask_inputs_2d(model, input_values, device):
         # Compute masking for the actual sequence length
         mask_prob = 0.2  # You can make this configurable
         
-        # For single time step (T=1), we mask the entire vector or not
+        # Handle masking based on sequence length
         if actual_seq_len == 1:
             # With T=1, we either mask the entire vector or not
             mask = torch.rand(batch_size, device=device) < mask_prob
             mask_time_indices = mask.unsqueeze(1)  # (B, 1)
         else:
-            # For multiple time steps, use the original logic
-            mask_length = 10
-            mask = torch.rand(batch_size, actual_seq_len, device=device) < mask_prob
-            mask_time_indices = mask
+            # For multiple time steps, use standard wav2vec2 masking
+            mask_length = min(10, actual_seq_len // 4)  # Adjust mask length for temporal steps
+            from fairseq.data.data_utils import compute_mask_indices
+            mask_time_indices = compute_mask_indices(
+                shape=(batch_size, actual_seq_len),
+                mask_prob=mask_prob,
+                mask_length=mask_length,
+                device=device
+            )
         
         # Debug: Print masking information (only for first call)
         if not hasattr(compute_mask_inputs_2d, '_debug_printed'):
@@ -138,8 +150,8 @@ def compute_mask_inputs_2d(model, input_values, device):
                 print(f"   Expected model output: [batch, {actual_seq_len}, {C * H_out * W_out}] (single time step with flattened features)")
                 print(f"   Masking strategy: Mask entire vector or not (T=1)")
             else:
-                print(f"   Expected model output: [batch, {actual_seq_len}, {C * H_out * W_out}] (multiple time steps)")
-                print(f"   Masking strategy: Standard sequence masking")
+                print(f"   Expected model output: [batch, {actual_seq_len}, features] (multiple time steps from temporal conv1d)")
+                print(f"   Masking strategy: Standard wav2vec2 temporal masking")
             compute_mask_inputs_2d._debug_printed = True
         
         # Ensure at least some tokens are masked
@@ -930,12 +942,16 @@ def run_wav2vec2_2d(sessions, sess):
         conv_bias=False,
         extractor_mode="default",
         
-        # Adaptive pooling after flattening to standardize dimensions
+                # Adaptive pooling after flattening to standardize dimensions
         flattened_pool_dim=512,  # Standardize to 512 dimensions after flattening
-        
-        # Disable negative sampling for single time step (flattened) approach
-        num_negatives=0,  # No negative sampling since we have single time step
-        cross_sample_negatives=0,  # No cross-sample negatives
+
+        # 1D CNN to create multiple time steps after adaptive pooling
+        temporal_conv1d_enabled=True,  # Enable 1D CNN for temporal expansion
+        temporal_steps=100,  # Number of time steps to create with 1D CNN
+
+        # Re-enable negative sampling now that we have multiple time steps
+        num_negatives=100,  # Restore negative sampling with multiple time steps
+        cross_sample_negatives=10,  # Cross-sample negatives
         codebook_negatives=0,  # No codebook negatives
     )
     
