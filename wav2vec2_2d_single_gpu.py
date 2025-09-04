@@ -294,24 +294,28 @@ def _infer_2d_shape_from_features(tensor, step):
     return tensor.view(batch_size, 1, sqrt_features, sqrt_features)
 
 def train_2d(model, data_loader, optimizer, device):
+    from tqdm.auto import tqdm
+    import sys
+
     total_loss = 0
     grad_norms = []
     model.train()
-    print(f"Number of train samples: {len(data_loader)}")
+    # print(f"Number of train samples: {len(data_loader)}")
     
     # Performance optimization: limit debug prints to first few steps
-    max_debug_steps = 3
-    # Logging
-    log_interval = 50
-    running_loss = 0.0
+    max_debug_steps = 0  # disable debug prints
+    # Logging (commented out per request)
+    # log_interval = 50
+    # running_loss = 0.0
     
     # Memory optimization: clear cache periodically
     torch.cuda.empty_cache()
     
-    for step, (input_values, probe_ids) in enumerate(data_loader):
+    progress = tqdm(data_loader, total=len(data_loader), leave=True, disable=not sys.stdout.isatty())
+    for step, (input_values, probe_ids) in enumerate(progress):
         # Performance optimization: add progress indicator
         if step % 100 == 0:
-            print(f"🔄 Training step {step}/{len(data_loader)}")
+            # print(f"🔄 Training step {step}/{len(data_loader)}")
             # Memory optimization: clear cache every 100 steps
             torch.cuda.empty_cache()
         
@@ -323,78 +327,13 @@ def train_2d(model, data_loader, optimizer, device):
         
         # Debug: Print original shape (only for first few steps)
         if debug_step:
-            print(f"Input shape from ModifiedSessionDataset: {input_values.shape}")
-            print(f"Probe IDs: {probe_ids}")
-            print(f"Input range: [{input_values.min():.6f}, {input_values.max():.6f}]")
+            pass
         
         # ROBUST INPUT SHAPE HANDLING - Comprehensive fix for all dimension issues
         input_values = _robust_normalize_input_shape(input_values, step)
         
         if debug_step:
-            print(f"Final input shape for 2D CNN: {input_values.shape}")
-            print(f"Final range: [{input_values.min():.6f}, {input_values.max():.6f}]")
-            
-            # Debug: Test the model with this input to see what happens (only for first step)
-            if step == 0:
-                print(f"🔍 Testing model forward pass with input shape: {input_values.shape}")
-                try:
-                    with torch.no_grad():
-                        test_output = model.feature_extractor(input_values)
-                        print(f"✅ Feature extractor output shape: {test_output.shape}")
-                        
-                        # Test the reshape operation
-                        B, C, H, W = test_output.shape
-                        test_features = test_output.permute(0, 2, 3, 1).reshape(B, H * W, C)
-                        print(f"Reshaped features shape: {test_features.shape}")
-                        print(f"Expected layer_norm input shape: [*, {test_features.shape[-1]}]")
-                        print(f"Actual layer_norm normalized_shape: {model.layer_norm.normalized_shape}")
-                        
-                        # Test layer_norm with correct dimensions
-                        try:
-                            test_layer_norm_output = model.layer_norm(test_features)
-                            print(f"✅ Layer_norm test successful! Output shape: {test_layer_norm_output.shape}")
-                            
-                            # Test post_extract_proj layer
-                            if model.post_extract_proj is not None:
-                                test_proj_output = model.post_extract_proj(test_layer_norm_output)
-                                print(f"✅ Post_extract_proj test successful! Output shape: {test_proj_output.shape}")
-                            else:
-                                print(f"ℹ️ Post_extract_proj is None (no projection needed)")
-                            
-                            # Test spatial embeddings if they exist
-                            if hasattr(model, 'spatial_embedding') and model.spatial_embedding is not None:
-                                print(f"🔍 Testing spatial embeddings...")
-                                try:
-                                    # Create dummy recording_site_ids
-                                    B, seq_len, C = test_layer_norm_output.shape
-                                    dummy_recording_site_ids = torch.zeros(B, C, dtype=torch.long, device=device)
-                                    
-                                    spatial_embeds = model.spatial_embedding(dummy_recording_site_ids)
-                                    print(f"   Spatial embeddings shape: {spatial_embeds.shape}")
-                                    
-                                    if hasattr(model, 'spatial_projection') and model.spatial_projection is not None:
-                                        spatial_embeds = model.spatial_projection(spatial_embeds)
-                                        print(f"   After spatial projection: {spatial_embeds.shape}")
-                                    
-                                    # Test the expansion operation
-                                    spatial_embeds_expanded = spatial_embeds.unsqueeze(1).expand(-1, seq_len, -1)
-                                    print(f"   After expansion: {spatial_embeds_expanded.shape}")
-                                    print(f"   ✅ Spatial embeddings test successful!")
-                                    
-                                except Exception as e:
-                                    print(f"   ❌ Spatial embeddings test failed: {e}")
-                                    import traceback
-                                    traceback.print_exc()
-                            else:
-                                print(f"ℹ️ Spatial embeddings are disabled (no spatial information)")
-                                
-                        except Exception as e:
-                            print(f"❌ Layer_norm or post_extract_proj test failed: {e}")
-                        
-                except Exception as e:
-                    print(f"❌ Error in test forward pass: {e}")
-                    import traceback
-                    traceback.print_exc()
+            pass
         
         # Compute masking for 2D input (optimized)
         mask_time_indices, sampled_negative_indices = compute_mask_inputs_2d(model, input_values, device)
@@ -407,9 +346,9 @@ def train_2d(model, data_loader, optimizer, device):
                 features_only=False
             )
         except Exception as e:
-            print(f"❌ Model forward pass failed: {e}")
-            print(f"   Input shape: {input_values.shape}")
-            print(f"   Mask shape: {mask_time_indices.shape if mask_time_indices is not None else 'None'}")
+            # print(f"❌ Model forward pass failed: {e}")
+            # print(f"   Input shape: {input_values.shape}")
+            # print(f"   Mask shape: {mask_time_indices.shape if mask_time_indices is not None else 'None'}")
             # Skip this batch if model fails
             continue
         
@@ -423,10 +362,10 @@ def train_2d(model, data_loader, optimizer, device):
                 features = outputs['features'] if 'features' in outputs else outputs['x']
                 loss = F.mse_loss(features, features.detach())  # Placeholder loss
         except Exception as e:
-            print(f"❌ Loss computation failed: {e}")
-            print(f"   Outputs type: {type(outputs)}")
-            if hasattr(outputs, 'keys'):
-                print(f"   Outputs keys: {list(outputs.keys())}")
+            # print(f"❌ Loss computation failed: {e}")
+            # print(f"   Outputs type: {type(outputs)}")
+            # if hasattr(outputs, 'keys'):
+            #     print(f"   Outputs keys: {list(outputs.keys())}")
             # Skip this batch if loss computation fails
             continue
         
@@ -441,24 +380,27 @@ def train_2d(model, data_loader, optimizer, device):
             grad_norms.append(grad_norm)
             optimizer.step()
         except Exception as e:
-            print(f"❌ Backward pass failed: {e}")
-            print(f"   Loss value: {loss.item() if loss is not None else 'None'}")
+            # print(f"❌ Backward pass failed: {e}")
+            # print(f"   Loss value: {loss.item() if loss is not None else 'None'}")
             # Skip this batch if backward pass fails
             continue
 
         total_loss += loss.item()
-        running_loss += loss.item()
+        # running_loss += loss.item()
 
-        # Periodic loss logging
-        if step > 0 and (step % log_interval == 0 or step == len(data_loader) - 1):
-            avg_running = running_loss / (log_interval if step % log_interval == 0 else (step % log_interval))
-            print(f"🧮 Train step {step}/{len(data_loader)} | loss: {avg_running:.4f} | grad_norm: {grad_norm:.3f}")
-            running_loss = 0.0
+        # Periodic loss logging (commented out per request)
+        # if step > 0 and (step % log_interval == 0 or step == len(data_loader) - 1):
+        #     avg_running = running_loss / (log_interval if step % log_interval == 0 else (step % log_interval))
+        #     print(f"🧮 Train step {step}/{len(data_loader)} | loss: {avg_running:.4f} | grad_norm: {grad_norm:.3f}")
+        #     running_loss = 0.0
+
+        # Show loss in progress bar
+        progress.set_postfix({"loss": f"{loss.item():.4f}", "grad": f"{grad_norm:.2f}"})
 
     avg_loss = total_loss / len(data_loader)
     avg_grad = sum(grad_norms) / len(grad_norms) if grad_norms else 0.0
 
-    print(f"✅ Epoch train avg loss: {avg_loss:.4f} | avg grad_norm: {avg_grad:.3f}")
+    # print(f"✅ Epoch train avg loss: {avg_loss:.4f} | avg grad_norm: {avg_grad:.3f}")
     return avg_loss, avg_grad
 
 
