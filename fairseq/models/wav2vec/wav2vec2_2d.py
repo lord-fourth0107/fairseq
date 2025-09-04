@@ -1021,68 +1021,68 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
         features = features.unsqueeze(1)  # (B, 1, C*H*W) - add time dimension
 
         # Optional adaptive pooling AFTER flattening to stabilize feature length
-        print(f"🔍 Adaptive Pooling Debug:")
-        print(f"   Features shape before pooling: {features.shape}")
-        print(f"   flatten_pool exists: {self.flatten_pool is not None}")
-        print(f"   flattened_pool_dim: {getattr(self.cfg, 'flattened_pool_dim', 'NOT_SET')}")
-        print(f"   features.size(-1): {features.size(-1)}")
-        print(f"   Should pool: {self.flatten_pool is not None and features.size(-1) != self.cfg.flattened_pool_dim}")
+        # print(f"🔍 Adaptive Pooling Debug:")
+        # print(f"   Features shape before pooling: {features.shape}")
+        # print(f"   flatten_pool exists: {self.flatten_pool is not None}")
+        # print(f"   flattened_pool_dim: {getattr(self.cfg, 'flattened_pool_dim', 'NOT_SET')}")
+        # print(f"   features.size(-1): {features.size(-1)}")
+        # print(f"   Should pool: {self.flatten_pool is not None and features.size(-1) != self.cfg.flattened_pool_dim}")
         
         if self.flatten_pool is not None and features.size(-1) != self.cfg.flattened_pool_dim:
             features = self.flatten_pool(features)  # (B, 1, flattened_pool_dim)
-            print(f"   ✅ Applied adaptive pooling: {features.shape}")
-        else:
-            print(f"   ⚠️ No adaptive pooling applied")
+            # print(f"   ✅ Applied adaptive pooling: {features.shape}")
+        # else:
+        #     print(f"   ⚠️ No adaptive pooling applied")
 
         # Apply 1D CNN to create multiple time steps after adaptive pooling
         if self.temporal_conv1d is not None:
-            print(f"🔍 Temporal Conv1D Debug:")
-            print(f"   Features shape before temporal conv: {features.shape}")
+            # print(f"🔍 Temporal Conv1D Debug:")
+            # print(f"   Features shape before temporal conv: {features.shape}")
             
             # Reshape for Conv1d: (B, 1, D) -> (B, D, 1) -> (B, D, temporal_steps)
             features_1d = features.transpose(1, 2)  # (B, D, 1)
             features_temporal = self.temporal_conv1d(features_1d)  # (B, D, temporal_steps)
             features = features_temporal.transpose(1, 2)  # (B, temporal_steps, D)
             
-            print(f"   ✅ Applied temporal conv1d: {features.shape}")
-            print(f"   Created {features.shape[1]} time steps from single flattened vector")
-        else:
-            print(f"   ⚠️ No temporal conv1d applied, keeping single time step")
+            # print(f"   ✅ Applied temporal conv1d: {features.shape}")
+            # print(f"   Created {features.shape[1]} time steps from single flattened vector")
+        # else:
+        #     print(f"   ⚠️ No temporal conv1d applied, keeping single time step")
         
         # Debug: Verify the flattening worked correctly
-        if not hasattr(self, '_feature_reshape_debug_printed'):
-            print(f"   ✅ After flattening (and pooling if enabled): {features.shape}")
-            if self.flatten_pool is not None:
-                print(f"   Applied AdaptiveAvgPool1d to length {self.cfg.flattened_pool_dim}")
-            else:
-                print(f"   Each batch element now has 1 time step with {C * H * W} features")
+        # if not hasattr(self, '_feature_reshape_debug_printed'):
+        #     print(f"   ✅ After flattening (and pooling if enabled): {features.shape}")
+        #     if self.flatten_pool is not None:
+        #         print(f"   Applied AdaptiveAvgPool1d to length {self.cfg.flattened_pool_dim}")
+        #     else:
+        #         print(f"   Each batch element now has 1 time step with {C * H * W} features")
         
         # Handle layer_norm dimension mismatch
-        print(f"🔍 Before layer_norm: features shape = {features.shape}")
-        print(f"🔍 layer_norm expects: {self.layer_norm.normalized_shape}")
+        # print(f"🔍 Before layer_norm: features shape = {features.shape}")
+        # print(f"🔍 layer_norm expects: {self.layer_norm.normalized_shape}")
         
         # Proactively check if dimensions match
         expected_dim = features.shape[-1]
         if self.layer_norm.normalized_shape[0] != expected_dim:
-            print(f"🔍 Layer norm dimension mismatch detected: layer expects {self.layer_norm.normalized_shape[0]}, got {expected_dim}")
-            print(f"   🔄 Proactively recreating layer_norm...")
+            # print(f"🔍 Layer norm dimension mismatch detected: layer expects {self.layer_norm.normalized_shape[0]}, got {expected_dim}")
+            # print(f"   🔄 Proactively recreating layer_norm...")
             
             # Recreate layer_norm with correct dimensions
             from fairseq.modules import LayerNorm
             self.layer_norm = LayerNorm(expected_dim).to(features.device)
             
-            print(f"   ✅ Proactively recreated layer_norm with dim: {expected_dim}")
-            print(f"   New layer_norm normalized_shape: {self.layer_norm.normalized_shape}")
+            # print(f"   ✅ Proactively recreated layer_norm with dim: {expected_dim}")
+            # print(f"   New layer_norm normalized_shape: {self.layer_norm.normalized_shape}")
         
         try:
             features = self.layer_norm(features)
-            print(f"🔍 layer_norm success: output shape = {features.shape}")
+            # print(f"🔍 layer_norm success: output shape = {features.shape}")
         except RuntimeError as e:
-            print(f"🔍 Layer Norm Debug:")
-            print(f"   Features shape: {features.shape}")
-            print(f"   Layer norm expected shape: [*, {features.shape[-1]}]")
-            print(f"   Error: {e}")
-            print(f"   🔄 Recreating layer_norm with correct dimensions...")
+            # print(f"🔍 Layer Norm Debug:")
+            # print(f"   Features shape: {features.shape}")
+            # print(f"   Layer norm expected shape: [*, {features.shape[-1]}]")
+            # print(f"   Error: {e}")
+            # print(f"   🔄 Recreating layer_norm with correct dimensions...")
             
             # Recreate layer_norm with correct dimensions
             if len(features.shape) == 3:  # [B, T, D] - our new format
@@ -1098,11 +1098,11 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
             # Try again with the recreated layer_norm
             try:
                 features = self.layer_norm(features)
-                print(f"   ✅ Layer_norm recreated successfully with dim {correct_dim}")
-                print(f"   New layer_norm normalized_shape: {self.layer_norm.normalized_shape}")
+                # print(f"   ✅ Layer_norm recreated successfully with dim {correct_dim}")
+                # print(f"   New layer_norm normalized_shape: {self.layer_norm.normalized_shape}")
             except Exception as e2:
-                print(f"   ❌ Layer_norm recreation failed: {e2}")
-                print(f"   🔄 Skipping layer_norm...")
+                # print(f"   ❌ Layer_norm recreation failed: {e2}")
+                # print(f"   🔄 Skipping layer_norm...")
                 # Skip layer_norm if it still fails
                 pass
         unmasked_features = features.clone()

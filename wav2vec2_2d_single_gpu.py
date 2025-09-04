@@ -354,18 +354,45 @@ def train_2d(model, data_loader, optimizer, device):
         
         # Extract loss from outputs with error handling
         try:
+            # if step < 5:  # Debug first few steps
+            #     print(f"  Outputs type: {type(outputs)}")
+            #     if hasattr(outputs, 'keys'):
+            #         print(f"  Outputs keys: {list(outputs.keys())}")
+            #     if hasattr(outputs, 'loss'):
+            #         print(f"  Has loss attr: {outputs.loss is not None}")
+            #         if outputs.loss is not None:
+            #             print(f"  Loss value: {outputs.loss.item()}")
+            
             if hasattr(outputs, 'loss') and outputs.loss is not None:
                 loss = outputs.loss
             else:
-                # If no loss in outputs, compute a simple reconstruction loss
-                # This is a fallback - you should implement proper loss computation
-                features = outputs['features'] if 'features' in outputs else outputs['x']
-                loss = F.mse_loss(features, features.detach())  # Placeholder loss
+                # Compute contrastive loss for SSL training
+                # The model returns logits in 'x' - these are the contrastive predictions
+                logits = outputs['x']  # Shape: [num_negatives + 1, batch_size, sequence_length]
+                
+                # if step < 5:
+                #     print(f"  Logits shape: {logits.shape}")
+                #     print(f"  Logits range: [{logits.min():.4f}, {logits.max():.4f}]")
+                
+                # Create targets: first item is positive (0), rest are negatives (1, 2, ...)
+                batch_size, seq_len = logits.shape[1], logits.shape[2]
+                targets = torch.zeros(batch_size, seq_len, dtype=torch.long, device=logits.device)
+                
+                # Compute cross-entropy loss
+                # Reshape logits to [batch_size * seq_len, num_classes]
+                logits_flat = logits.permute(1, 2, 0).contiguous().view(-1, logits.shape[0])
+                targets_flat = targets.view(-1)
+                
+                loss = F.cross_entropy(logits_flat, targets_flat)
+                
+                # if step < 5:
+                #     print(f"  Computed contrastive loss: {loss.item()}")
         except Exception as e:
-            # print(f"❌ Loss computation failed: {e}")
-            # print(f"   Outputs type: {type(outputs)}")
-            # if hasattr(outputs, 'keys'):
-            #     print(f"   Outputs keys: {list(outputs.keys())}")
+            # if step < 5:
+            #     print(f"❌ Loss computation failed: {e}")
+            #     print(f"   Outputs type: {type(outputs)}")
+            #     if hasattr(outputs, 'keys'):
+            #         print(f"   Outputs keys: {list(outputs.keys())}")
             # Skip this batch if loss computation fails
             continue
         
@@ -394,7 +421,12 @@ def train_2d(model, data_loader, optimizer, device):
         #     print(f"🧮 Train step {step}/{len(data_loader)} | loss: {avg_running:.4f} | grad_norm: {grad_norm:.3f}")
         #     running_loss = 0.0
 
-        # Show loss in progress bar
+        # Show loss in progress bar with more debugging
+        # if step < 5:  # Debug first few steps
+        #     print(f"Step {step}: loss={loss.item():.6f}, grad_norm={grad_norm:.6f}")
+        #     print(f"  Loss type: {type(loss)}, requires_grad: {loss.requires_grad}")
+        #     print(f"  Model parameters require_grad: {sum(p.requires_grad for p in model.parameters())}")
+        
         progress.set_postfix({"loss": f"{loss.item():.4f}", "grad": f"{grad_norm:.2f}"})
 
     avg_loss = total_loss / len(data_loader)
