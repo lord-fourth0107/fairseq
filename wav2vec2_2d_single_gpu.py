@@ -134,8 +134,9 @@ def compute_mask_inputs_2d(model, input_values, device):
                 shape=(batch_size, actual_seq_len),
                 mask_prob=mask_prob,
                 mask_length=mask_length,
-                device=device
             )
+            # move to the same device as inputs
+            mask_time_indices = torch.as_tensor(mask_time_indices, device=device)
         
         # Debug: Print masking information (only for first call)
         if not hasattr(compute_mask_inputs_2d, '_debug_printed'):
