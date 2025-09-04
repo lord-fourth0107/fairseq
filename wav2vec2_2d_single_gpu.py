@@ -134,6 +134,7 @@ def compute_mask_inputs_2d(model, input_values, device):
                 shape=(batch_size, actual_seq_len),
                 mask_prob=mask_prob,
                 mask_length=mask_length,
+                padding_mask=None,
             )
             # move to the same device as inputs
             mask_time_indices = torch.as_tensor(mask_time_indices, device=device)
