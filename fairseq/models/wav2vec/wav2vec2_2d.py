@@ -92,6 +92,20 @@ class Wav2Vec2_2DConfig(FairseqDataclass):
             "help": "If >0, apply AdaptiveAvgPool1d to flattened features to this length (after flattening)"
         },
     )
+    # Enable temporal Conv1d after flatten+pool to create multiple time steps
+    temporal_conv1d_enabled: bool = field(
+        default=False,
+        metadata={
+            "help": "If True, apply a Conv1d stack after flatten+pool and expand to temporal_steps"
+        },
+    )
+    # Number of time steps to produce with temporal Conv1d
+    temporal_steps: int = field(
+        default=100,
+        metadata={
+            "help": "Output sequence length after temporal Conv1d (AdaptiveAvgPool1d to this size)"
+        },
+    )
     
     # Spatial embedding parameters for depth-wise regions within probes
     use_spatial_embedding: bool = field(
