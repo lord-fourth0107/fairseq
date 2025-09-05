@@ -299,6 +299,7 @@ def train_2d(model, data_loader, optimizer, device, accumulation_steps=4):
 
     total_loss = 0
     grad_norms = []
+    grad_norm = 0.0  # Initialize grad_norm
     model.train()
     # print(f"Number of train samples: {len(data_loader)}")
     

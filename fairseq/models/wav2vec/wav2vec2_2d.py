@@ -884,12 +884,12 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
 
     def compute_preds(self, x, y, negatives):
         # Debug: Print tensor shapes to understand the mismatch
-        if not hasattr(self, '_compute_preds_debug_printed'):
-            print(f"🔍 Compute Preds Debug:")
-            print(f"   x shape: {x.shape}")
-            print(f"   y shape: {y.shape}")
-            print(f"   negatives shape: {negatives.shape}")
-            self._compute_preds_debug_printed = True
+        # if not hasattr(self, '_compute_preds_debug_printed'):
+        #     print(f"🔍 Compute Preds Debug:")
+        #     print(f"   x shape: {x.shape}")
+        #     print(f"   y shape: {y.shape}")
+        #     print(f"   negatives shape: {negatives.shape}")
+        #     self._compute_preds_debug_printed = True
         
         # Skip neg_is_pos check entirely to avoid dimension issues
         neg_is_pos = torch.zeros(y.shape[0], y.shape[1], dtype=torch.bool, device=y.device)
@@ -899,12 +899,12 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
         # Simplified approach: just use y as targets if concatenation fails
         try:
             targets = torch.cat([y, negatives], dim=0)
-            if not hasattr(self, '_compute_preds_debug_printed'):
-                print(f"   ✅ Standard concatenation successful")
+            # if not hasattr(self, '_compute_preds_debug_printed'):
+            #     print(f"   ✅ Standard concatenation successful")
         except RuntimeError as e:
-            if not hasattr(self, '_compute_preds_debug_printed'):
-                print(f"   ⚠️ Concatenation failed: {e}")
-                print(f"   🔄 Using y as targets only...")
+            # if not hasattr(self, '_compute_preds_debug_printed'):
+            #     print(f"   ⚠️ Concatenation failed: {e}")
+            #     print(f"   🔄 Using y as targets only...")
             # Use only y as targets (no negatives)
             targets = y
 
@@ -912,9 +912,9 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
         try:
             logits = torch.cosine_similarity(x.float(), targets.float(), dim=-1).type_as(x)
         except RuntimeError as e:
-            if not hasattr(self, '_compute_preds_debug_printed'):
-                print(f"   ⚠️ Cosine similarity failed: {e}")
-                print(f"   🔄 Using fallback similarity computation...")
+            # if not hasattr(self, '_compute_preds_debug_printed'):
+            #     print(f"   ⚠️ Cosine similarity failed: {e}")
+            #     print(f"   🔄 Using fallback similarity computation...")
             
             # Fallback: compute similarity manually with dimension alignment
             x_flat = x.view(x.shape[0], -1)
@@ -1323,15 +1323,15 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
                 "layer_results": layer_results,
             }
 
-        print(f"🔍 After encoder, before quantizer:")
-        print(f"   x shape: {x.shape}")
-        print(f"   unmasked_features shape: {unmasked_features.shape}")
-        print(f"   quantizer exists: {self.quantizer is not None}")
+        # print(f"🔍 After encoder, before quantizer:")
+        # print(f"   x shape: {x.shape}")
+        # print(f"   unmasked_features shape: {unmasked_features.shape}")
+        # print(f"   quantizer exists: {self.quantizer is not None}")
         
         if self.quantizer:
-            print(f"🔍 Processing quantizer...")
+            # print(f"🔍 Processing quantizer...")
             if self.negatives_from_everywhere:
-                print(f"   Using negatives_from_everywhere")
+                # print(f"   Using negatives_from_everywhere")
                 try:
                     q = self.quantizer(unmasked_features, produce_targets=False)
                     y = q["x"]
@@ -1339,13 +1339,13 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
                     code_ppl = q["code_perplexity"]
                     prob_ppl = q["prob_perplexity"]
                     curr_temp = q["temp"]
-                    print(f"   Quantizer output y shape: {y.shape}")
+                    # print(f"   Quantizer output y shape: {y.shape}")
                     # Recreate project_q if needed
                     self._recreate_project_q_if_needed(y)
                     y = self.project_q(y)
-                    print(f"   After project_q: {y.shape}")
+                    # print(f"   After project_q: {y.shape}")
                 except Exception as e:
-                    print(f"❌ Quantizer processing failed: {e}")
+                    # print(f"❌ Quantizer processing failed: {e}")
                     raise
 
                 negs, _ = self.sample_negatives(
@@ -1416,15 +1416,15 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
                 cb_negs = self.project_q(cb_negs)
                 negs = torch.cat([negs, cb_negs], dim=0)
         else:
-            print(f"🔍 No quantizer, processing without quantization...")
-            print(f"   y shape before project_q: {y.shape}")
+            # print(f"🔍 No quantizer, processing without quantization...")
+            # print(f"   y shape before project_q: {y.shape}")
             # Recreate project_q if needed
             self._recreate_project_q_if_needed(y)
             y = self.project_q(y)
-            print(f"   y shape after project_q: {y.shape}")
+            # print(f"   y shape after project_q: {y.shape}")
 
             if self.negatives_from_everywhere:
-                print(f"   Using negatives_from_everywhere")
+                # print(f"   Using negatives_from_everywhere")
                 negs, _ = self.sample_negatives(
                     unmasked_features,
                     y.size(1),
@@ -1434,25 +1434,25 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
                 self._recreate_project_q_if_needed(negs)
                 negs = self.project_q(negs)
             else:
-                print(f"   Using standard negatives")
+                # print(f"   Using standard negatives")
                 try:
                     negs, _ = self.sample_negatives(
                         y,
                         y.size(1),
                         padding_count=padding_count,
                     )
-                    print(f"   ✅ sample_negatives successful: negs shape = {negs.shape}")
+                    # print(f"   ✅ sample_negatives successful: negs shape = {negs.shape}")
                     
                     # Handle case where sample_negatives returns empty tensor (single time step)
                     if negs.numel() == 0:
-                        print(f"   ⚠️ sample_negatives returned empty tensor (single time step)")
-                        print(f"   Creating dummy negatives for compatibility")
+                        # print(f"   ⚠️ sample_negatives returned empty tensor (single time step)")
+                        # print(f"   Creating dummy negatives for compatibility")
                         # Create dummy negatives with proper shape: (1, batch, time, features)
                         negs = torch.randn(1, y.shape[0], y.shape[1], y.shape[2], device=y.device, dtype=y.dtype)
-                        print(f"   Created dummy negatives: {negs.shape}")
+                        # print(f"   Created dummy negatives: {negs.shape}")
                         
                 except Exception as e:
-                    print(f"   ❌ sample_negatives failed: {e}")
+                    # print(f"   ❌ sample_negatives failed: {e}")
                     raise
 
         if not is_xla_tensor(x) and mask_indices is not None:
@@ -1488,41 +1488,41 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
             mask_indices = None
             # x is already the original features from the fallback above
         else:
-            print(f"🔍 Masking is disabled, skipping x masking...")
-            print(f"   x shape remains: {x.shape}")
+            # print(f"🔍 Masking is disabled, skipping x masking...")
+            # print(f"   x shape remains: {x.shape}")
 
-        print(f"🔍 Final processing steps...")
-        print(f"   x shape before final_proj: {x.shape}")
-        print(f"   y shape: {y.shape}")
-        print(f"   negs shape: {negs.shape}")
+        # print(f"🔍 Final processing steps...")
+        # print(f"   x shape before final_proj: {x.shape}")
+        # print(f"   y shape: {y.shape}")
+        # print(f"   negs shape: {negs.shape}")
         
         if self.target_glu:
-            print(f"   Applying target_glu...")
+            # print(f"   Applying target_glu...")
             y = self.target_glu(y)
             negs = self.target_glu(negs)
-            print(f"   After target_glu - y: {y.shape}, negs: {negs.shape}")
+            # print(f"   After target_glu - y: {y.shape}, negs: {negs.shape}")
 
-        print(f"   Applying final_proj...")
+        # print(f"   Applying final_proj...")
         x = self.final_proj(x)
-        print(f"   After final_proj: {x.shape}")
+        # print(f"   After final_proj: {x.shape}")
         
-        print(f"   Computing predictions...")
+        # print(f"   Computing predictions...")
         try:
             x = self.compute_preds(x, y, negs)
-            print(f"   ✅ compute_preds successful: {x.shape}")
+            # print(f"   ✅ compute_preds successful: {x.shape}")
         except Exception as e:
-            print(f"   ❌ compute_preds failed: {e}")
+            # print(f"   ❌ compute_preds failed: {e}")
             raise
 
-        print(f"🔍 Creating result dictionary...")
+        # print(f"🔍 Creating result dictionary...")
         result = {
             "x": x,
             "padding_mask": padding_mask,
             "features_pen": features_pen,
         }
-        print(f"✅ Model forward pass completed successfully!")
-        print(f"   Final result keys: {list(result.keys())}")
-        print(f"   Final x shape: {result['x'].shape}")
+        # print(f"✅ Model forward pass completed successfully!")
+        # print(f"   Final result keys: {list(result.keys())}")
+        # print(f"   Final x shape: {result['x'].shape}")
 
         if prob_ppl is not None:
             result["prob_perplexity"] = prob_ppl
