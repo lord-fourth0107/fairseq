@@ -293,7 +293,7 @@ def _infer_2d_shape_from_features(tensor, step):
     
     return tensor.view(batch_size, 1, sqrt_features, sqrt_features)
 
-def train_2d(model, data_loader, optimizer, device):
+def train_2d(model, data_loader, optimizer, device, accumulation_steps=4):
     from tqdm.auto import tqdm
     import sys
 
@@ -310,6 +310,9 @@ def train_2d(model, data_loader, optimizer, device):
     
     # Memory optimization: clear cache periodically
     torch.cuda.empty_cache()
+    
+    # Mixed precision training
+    scaler = torch.cuda.amp.GradScaler() if device.type == 'cuda' else None
     
     progress = tqdm(data_loader, total=len(data_loader), leave=True, disable=not sys.stdout.isatty())
     for step, (input_values, probe_ids) in enumerate(progress):
@@ -378,15 +381,27 @@ def train_2d(model, data_loader, optimizer, device):
                 batch_size, seq_len = logits.shape[1], logits.shape[2]
                 targets = torch.zeros(batch_size, seq_len, dtype=torch.long, device=logits.device)
                 
-                # Compute cross-entropy loss
+                # Compute cross-entropy loss (contrastive loss)
                 # Reshape logits to [batch_size * seq_len, num_classes]
                 logits_flat = logits.permute(1, 2, 0).contiguous().view(-1, logits.shape[0])
                 targets_flat = targets.view(-1)
                 
-                loss = F.cross_entropy(logits_flat, targets_flat)
+                contrastive_loss = F.cross_entropy(logits_flat, targets_flat)
+                
+                # Add diversity loss if quantization is enabled
+                diversity_loss = 0.0
+                if 'prob_perplexity' in outputs and outputs['prob_perplexity'] is not None:
+                    # Diversity loss: encourage uniform usage of codebook entries
+                    prob_perplexity = outputs['prob_perplexity']
+                    diversity_loss = -prob_perplexity  # Negative perplexity = diversity loss
+                
+                # Total loss = contrastive loss + diversity loss (like wav2vec2.0)
+                loss = contrastive_loss + 0.1 * diversity_loss  # α=0.1 for diversity loss weight
                 
                 # if step < 5:
-                #     print(f"  Computed contrastive loss: {loss.item()}")
+                #     print(f"  Computed contrastive loss: {contrastive_loss.item()}")
+                #     print(f"  Computed diversity loss: {diversity_loss.item()}")
+                #     print(f"  Total loss: {loss.item()}")
         except Exception as e:
             # if step < 5:
             #     print(f"❌ Loss computation failed: {e}")
@@ -399,13 +414,31 @@ def train_2d(model, data_loader, optimizer, device):
         if loss is None:
             continue
 
-        # Backward pass with error handling
+        # Backward pass with error handling and gradient accumulation
         try:
-            optimizer.zero_grad()
-            loss.backward()
-            grad_norm = get_grad_norm(model)
-            grad_norms.append(grad_norm)
-            optimizer.step()
+            # Scale loss for gradient accumulation
+            scaled_loss = loss / accumulation_steps
+            
+            if scaler is not None:
+                # Mixed precision backward pass
+                scaler.scale(scaled_loss).backward()
+            else:
+                scaled_loss.backward()
+                
+            # Accumulate gradients
+            if (step + 1) % accumulation_steps == 0:
+                if scaler is not None:
+                    # Mixed precision optimizer step
+                    scaler.unscale_(optimizer)
+                    grad_norm = get_grad_norm(model)
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    grad_norm = get_grad_norm(model)
+                    optimizer.step()
+                
+                grad_norms.append(grad_norm)
+                optimizer.zero_grad()
         except Exception as e:
             # print(f"❌ Backward pass failed: {e}")
             # print(f"   Loss value: {loss.item() if loss is not None else 'None'}")
@@ -427,6 +460,7 @@ def train_2d(model, data_loader, optimizer, device):
         #     print(f"  Loss type: {type(loss)}, requires_grad: {loss.requires_grad}")
         #     print(f"  Model parameters require_grad: {sum(p.requires_grad for p in model.parameters())}")
         
+        # Show loss in progress bar
         progress.set_postfix({"loss": f"{loss.item():.4f}", "grad": f"{grad_norm:.2f}"})
 
     avg_loss = total_loss / len(data_loader)
@@ -814,7 +848,7 @@ def run_wav2vec2_2d(sessions, sess):
         device = torch.device("cpu")
         print("Using CPU")
     
-    subset_data = 0.1  # 0.001 for 0.1% of the data, 0.01 for 1% of the data
+    subset_data = 0.01  # 0.01 for 1% of the data (much faster training)
     num_workers = 0  # 0 for single process, 4 for multi-process (reduced to prevent memory issues)
     epochs = 10  # Number of epochs to train the model
     print(f"Subset data: {subset_data}, Number of workers: {num_workers}, Epochs: {epochs}")
@@ -897,27 +931,27 @@ def run_wav2vec2_2d(sessions, sess):
     # Create wav2vec2_2d configuration for 2D matrix input
     w2v2_2d_config = Wav2Vec2_2DConfig(
         # 2D CNN specific parameters for [3750 × 93] input
-        conv_2d_feature_layers="[(64, 3, 2), (128, 3, 2), (256, 3, 2), (512, 3, 2)]",
+        conv_2d_feature_layers="[(32, 3, 2), (64, 3, 2), (128, 3, 2), (256, 3, 2)]",  # Smaller CNN
         input_channels=1,
         input_height=3750,  # Time points (height dimension)
         input_width=93,     # Channels (width dimension)
         
-        # Transformer parameters
-        encoder_layers=12,
-        encoder_embed_dim=768,
-        encoder_ffn_embed_dim=3072,
-        encoder_attention_heads=12,
+        # Transformer parameters - MUCH SMALLER
+        encoder_layers=6,  # Reduced from 12
+        encoder_embed_dim=384,  # Reduced from 768
+        encoder_ffn_embed_dim=1536,  # Reduced from 3072
+        encoder_attention_heads=6,  # Reduced from 12
         activation_fn="gelu",
         
         # Spatial embedding parameters
         use_spatial_embedding=use_spatial_embedding,
         num_recording_sites=64,
-        spatial_embed_dim=256,
+        spatial_embed_dim=128,  # Reduced from 256
         spatial_embed_dropout=0.1,
         
         # Masking parameters
-        mask_prob=0.2,
-        mask_length=10,
+        mask_prob=0.15,  # Reduced from 0.2
+        mask_length=5,  # Reduced from 10
         mask_selection="static",
         
         # Other parameters
@@ -929,20 +963,27 @@ def run_wav2vec2_2d(sessions, sess):
         conv_bias=False,
         extractor_mode="default",
         
-                # Adaptive pooling after flattening to standardize dimensions
-        flattened_pool_dim=512,  # Standardize to 512 dimensions after flattening
+        # Adaptive pooling after flattening to standardize dimensions
+        flattened_pool_dim=256,  # Reduced from 512
 
         # 1D CNN to create multiple time steps after adaptive pooling
         temporal_conv1d_enabled=True,  # Enable 1D CNN for temporal expansion
-        temporal_steps=100,  # Number of time steps to create with 1D CNN
+        temporal_steps=50,  # Reduced from 100
 
         # Re-enable negative sampling now that we have multiple time steps
-        num_negatives=100,  # Restore negative sampling with multiple time steps
-        cross_sample_negatives=10,  # Cross-sample negatives
-        codebook_negatives=0,  # No codebook negatives
+        num_negatives=20,  # Reduced from 100
+        cross_sample_negatives=5,  # Reduced from 10
+        codebook_negatives=10,  # Enable codebook negatives for quantization
+        
+        # Quantization parameters
+        quantizer_depth=2,
+        quantizer_factor=3,
+        quantizer_k=320,
+        quantizer_dim=256,
+        same_quantizer=True,
     )
     
-    train_config = {'epoch': epochs, 'lr': 1e-5}
+    train_config = {'epoch': epochs, 'lr': 5e-4}  # Increased learning rate
 
     # --- wandb Initialization ---
     try:
@@ -1098,11 +1139,11 @@ def run_wav2vec2_2d(sessions, sess):
             test_dataset = train_dataset  # Use train dataset as fallback
             print("⚠️ No test sessions, using train dataset")
         
-        train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True, num_workers=num_workers,
+        train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, num_workers=num_workers,
                                   pin_memory=True)
-        val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False, num_workers=num_workers,
+        val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=num_workers,
                                 pin_memory=True)
-        test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False, num_workers=num_workers,
+        test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False, num_workers=num_workers,
                                  pin_memory=True)
 
         # ModifiedSessionDataset doesn't have chance accuracy method
@@ -1116,9 +1157,9 @@ def run_wav2vec2_2d(sessions, sess):
                                            data_subset_percentage=subset_data, super_regions=True)
         
         # Create probe loaders for SSL training
-        train_probe_loader = DataLoader(train_probe_dataset, batch_size=16, shuffle=True, pin_memory=True,
+        train_probe_loader = DataLoader(train_probe_dataset, batch_size=32, shuffle=True, pin_memory=True,
                                         num_workers=num_workers)
-        val_probe_loader = DataLoader(val_probe_dataset, batch_size=16, shuffle=False, pin_memory=True,
+        val_probe_loader = DataLoader(val_probe_dataset, batch_size=32, shuffle=False, pin_memory=True,
                                           num_workers=num_workers)
         
         train_probe_chance_acc, val_probe_chance_acc = train_probe_dataset.get_chance_accuracy(), \
@@ -1143,7 +1184,7 @@ def run_wav2vec2_2d(sessions, sess):
         print(f"\n🔄 Epoch {epoch+1}/{train_config['epoch']}")
         
         # SSL Training: CNN Feature Extractor + Transformer + Quantization
-        train_loss, grad_norm = train_2d(ssl_model, train_loader, optimizer, device)
+        train_loss, grad_norm = train_2d(ssl_model, train_loader, optimizer, device, accumulation_steps=4)
         val_loss = validate_2d(ssl_model, val_loader, device)
         
         print(f"📊 SSL Results - Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, Grad Norm: {grad_norm:.4f}")
