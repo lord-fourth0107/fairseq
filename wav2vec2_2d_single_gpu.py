@@ -946,11 +946,11 @@ def run_wav2vec2_2d(sessions, sess):
         encoder_attention_heads=6,  # Reduced from 12
         activation_fn="gelu",
         
-        # Spatial embedding parameters
-        use_spatial_embedding=use_spatial_embedding,
-        num_recording_sites=64,
-        spatial_embed_dim=128,  # Reduced from 256
-        spatial_embed_dropout=0.1,
+        # Spatial embedding parameters (disabled for now)
+        # use_spatial_embedding=use_spatial_embedding,
+        # num_recording_sites=64,
+        # spatial_embed_dim=128,  # Reduced from 256
+        # spatial_embed_dropout=0.1,
         
         # Masking parameters
         mask_prob=0.15,  # Reduced from 0.2
