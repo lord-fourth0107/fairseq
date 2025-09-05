@@ -26,6 +26,7 @@ from fairseq.modules import (
     SamePad,
     TransposeLast,
 )
+from fairseq.modules.scaled_rope import ScaledRoPE, ScaledRoPEAttention, create_channel_positions
 from fairseq.modules.checkpoint_activations import checkpoint_wrapper
 from fairseq.modules.conformer_layer import ConformerWav2Vec2EncoderLayer
 from fairseq.modules.transformer_sentence_encoder import init_bert_params
@@ -125,6 +126,20 @@ class Wav2Vec2_2DConfig(FairseqDataclass):
     )
     spatial_embed_dropout: float = field(
         default=0.1, metadata={"help": "dropout for spatial embeddings"}
+    )
+    
+    # Scaled RoPE parameters (replaces spatial embeddings)
+    use_scaled_rope: bool = field(
+        default=True, metadata={"help": "whether to use Scaled RoPE for positional encoding"}
+    )
+    rope_max_seq_len: int = field(
+        default=4096, metadata={"help": "maximum sequence length for RoPE"}
+    )
+    rope_scale_factor: float = field(
+        default=1.0, metadata={"help": "scaling factor for RoPE extrapolation"}
+    )
+    rope_theta: float = field(
+        default=10000.0, metadata={"help": "theta parameter for RoPE frequency computation"}
     )
     
     # dropouts
@@ -566,6 +581,17 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
                 nn.ReLU(),
                 nn.AdaptiveAvgPool1d(temporal_steps)  # Ensure exact temporal_steps output
             )
+
+        # Scaled RoPE for positional encoding (replaces spatial embeddings)
+        self.scaled_rope = None
+        if cfg.use_scaled_rope:
+            self.scaled_rope = ScaledRoPE(
+                dim=cfg.encoder_embed_dim,
+                max_seq_len=cfg.rope_max_seq_len,
+                scale_factor=cfg.rope_scale_factor,
+                theta=cfg.rope_theta
+            )
+            print(f"Initialized Scaled RoPE with dim={cfg.encoder_embed_dim}, max_seq_len={cfg.rope_max_seq_len}")
 
         self.spatial_embedding = None
         if cfg.use_spatial_embedding:
@@ -1191,6 +1217,21 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
                     # Skip post_extract_proj if it still fails
                     pass
 
+        # Apply Scaled RoPE for positional encoding (replaces spatial embeddings)
+        if self.scaled_rope is not None:
+            # Create position indices for channels based on their depth
+            B, seq_len, embed_dim = features.shape
+            channel_positions = create_channel_positions(
+                num_channels=seq_len,
+                max_depth=3.8,  # Typical mouse brain depth
+                device=features.device
+            )
+            
+            # Apply Scaled RoPE to features
+            features = self.scaled_rope(features, channel_positions)
+            print(f"✅ Applied Scaled RoPE to features: {features.shape}")
+
+        # Legacy spatial embedding (deprecated)
         if self.spatial_embedding is not None:
             # For depth-wise regional input, we need to determine which depth region each channel belongs to
             if recording_site_ids is None:
@@ -1292,9 +1333,9 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
             self._masking_failures += 1
             if self._masking_failures >= 3:  # After 3 failures, disable masking entirely
                 self._masking_disabled = True
-                print(f"   🚫 PERMANENTLY DISABLING MASKING after {self._masking_failures} failures")
+                print(f"  PERMANENTLY DISABLING MASKING after {self._masking_failures} failures")
             else:
-                print(f"   🚫 Disabling masking due to reshape failures (failure #{self._masking_failures})")
+                print(f"  Disabling masking due to reshape failures (failure #{self._masking_failures})")
             mask_indices = None
             x = features  # Use original features without masking
             y = unmasked_features  # Use original unmasked features
@@ -1308,11 +1349,11 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
             x, layer_results = self.encoder(
                 x, padding_mask=padding_mask, layer=layer, corpus_key=corpus_key
             )
-            print(f"🔍 Encoder call successful:")
+            print(f" Encoder call successful:")
             print(f"   x output shape: {x.shape}")
             print(f"   layer_results length: {len(layer_results) if layer_results else 'None'}")
         except Exception as e:
-            print(f"❌ Encoder call failed: {e}")
+            print(f" Encoder call failed: {e}")
             raise
 
         if features_only:

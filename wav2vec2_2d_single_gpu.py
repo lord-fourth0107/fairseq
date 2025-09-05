@@ -930,7 +930,8 @@ def run_wav2vec2_2d(sessions, sess):
     print("Training the wav2vec2_2d model...")
     
     # Configuration parameters
-    use_spatial_embedding = False  # Disable spatial embedding for now
+    use_spatial_embedding = False  # Disable spatial embedding (deprecated)
+    use_scaled_rope = True  # Enable Scaled RoPE for positional encoding
     
     # Create wav2vec2_2d configuration for 2D matrix input
     w2v2_2d_config = Wav2Vec2_2DConfig(
@@ -947,8 +948,14 @@ def run_wav2vec2_2d(sessions, sess):
         encoder_attention_heads=6,  # Reduced from 12
         activation_fn="gelu",
         
-        # Spatial embedding parameters (disabled for now)
-        # use_spatial_embedding=use_spatial_embedding,
+        # Scaled RoPE parameters (replaces spatial embeddings)
+        use_scaled_rope=use_scaled_rope,
+        rope_max_seq_len=4096,
+        rope_scale_factor=1.0,
+        rope_theta=10000.0,
+        
+        # Legacy spatial embedding parameters (disabled)
+        use_spatial_embedding=use_spatial_embedding,
         # num_recording_sites=64,
         # spatial_embed_dim=128,  # Reduced from 256
         # spatial_embed_dropout=0.1,
