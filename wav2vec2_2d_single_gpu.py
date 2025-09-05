@@ -981,8 +981,8 @@ def run_wav2vec2_2d(sessions, sess):
         # Quantization parameters
         quantizer_depth=2,
         quantizer_factor=3,
-        quantizer_k=320,
-        quantizer_dim=256,
+        latent_vars=320,  # This is quantizer_k
+        latent_groups=2,  # Number of codebook groups
         same_quantizer=True,
     )
     
