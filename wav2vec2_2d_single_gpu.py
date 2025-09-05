@@ -928,6 +928,9 @@ def run_wav2vec2_2d(sessions, sess):
 
     print("Training the wav2vec2_2d model...")
     
+    # Configuration parameters
+    use_spatial_embedding = False  # Disable spatial embedding for now
+    
     # Create wav2vec2_2d configuration for 2D matrix input
     w2v2_2d_config = Wav2Vec2_2DConfig(
         # 2D CNN specific parameters for [3750 × 93] input
