@@ -1490,6 +1490,7 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
         else:
             # print(f"🔍 Masking is disabled, skipping x masking...")
             # print(f"   x shape remains: {x.shape}")
+            pass
 
         # print(f"🔍 Final processing steps...")
         # print(f"   x shape before final_proj: {x.shape}")
