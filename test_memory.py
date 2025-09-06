@@ -94,14 +94,37 @@ def test_memory_usage():
             sampled_data = data[::step]
             print(f"   Sampled data length: {len(sampled_data)}")
             
-            # Convert to numpy
-            np_data = np.array(sampled_data)
-            print(f"   Numpy data shape: {np_data.shape}")
-            
-            # Convert to tensor
-            tensor_data = torch.FloatTensor(np_data)
-            print(f"   Tensor data shape: {tensor_data.shape}")
-            print("   ✅ Data sampling successful")
+            # Handle tuple format - extract first element from each tuple
+            if isinstance(sampled_data[0], tuple):
+                print(f"   First tuple length: {len(sampled_data[0])}")
+                print(f"   First tuple element types: {[type(x) for x in sampled_data[0]]}")
+                
+                # Extract first element from each tuple
+                first_elements = [item[0] for item in sampled_data if len(item) > 0]
+                print(f"   Extracted first elements: {len(first_elements)}")
+                
+                if first_elements and hasattr(first_elements[0], 'shape'):
+                    print(f"   First element shape: {first_elements[0].shape}")
+                    
+                    # Convert to numpy
+                    np_data = np.array(first_elements)
+                    print(f"   Numpy data shape: {np_data.shape}")
+                    
+                    # Convert to tensor
+                    tensor_data = torch.FloatTensor(np_data)
+                    print(f"   Tensor data shape: {tensor_data.shape}")
+                    print("   ✅ Data sampling successful")
+                else:
+                    print("   ❌ No valid array data found in tuples")
+            else:
+                # Direct conversion if not tuples
+                np_data = np.array(sampled_data)
+                print(f"   Numpy data shape: {np_data.shape}")
+                
+                # Convert to tensor
+                tensor_data = torch.FloatTensor(np_data)
+                print(f"   Tensor data shape: {tensor_data.shape}")
+                print("   ✅ Data sampling successful")
         
     except Exception as e:
         print(f"   ❌ Data sampling error: {e}")
