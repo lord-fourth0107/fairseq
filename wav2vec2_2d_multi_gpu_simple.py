@@ -17,8 +17,9 @@ from tqdm import tqdm
 import warnings
 warnings.filterwarnings("ignore")
 
-# Add fairseq to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'fairseq'))
+# Add fairseq to path - same as single GPU script
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from fairseq.models.wav2vec.wav2vec2_2d import Wav2Vec2_2DConfig, Wav2Vec2_2DModel
 from fairseq.optim.adam import FairseqAdam
