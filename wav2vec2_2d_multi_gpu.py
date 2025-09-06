@@ -235,7 +235,7 @@ def validate_2d_multi_gpu(model, data_loader, device, rank):
     if rank == 0:
         avg_loss = np.mean(losses) if losses else 0.0
         print(f"Multi-GPU Validation completed - Avg Loss: {avg_loss:.4f}")
-    return avg_loss
+        return avg_loss
     else:
         return 0.0
 
