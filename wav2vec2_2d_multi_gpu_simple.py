@@ -171,12 +171,12 @@ def run_training(rank, world_size, session_data, output_path, num_epochs=10):
         if isinstance(session_data['data'], np.ndarray):
             data = session_data['data']
         else:
-            # For large lists, sample a subset to avoid memory issues
+            # For large lists, sample a very small subset to avoid memory issues
             raw_data = session_data['data']
-            if len(raw_data) > 10000:  # If more than 10k elements
-                print(f"Large dataset detected: {len(raw_data)} elements. Sampling 10,000 for training...")
-                # Sample every nth element to get ~10k samples
-                step = len(raw_data) // 10000
+            if len(raw_data) > 1000:  # If more than 1k elements
+                print(f"Large dataset detected: {len(raw_data)} elements. Sampling 1,000 for training...")
+                # Sample every nth element to get ~1k samples
+                step = len(raw_data) // 1000
                 data = np.array(raw_data[::step])
             else:
                 data = np.array(raw_data)
@@ -189,8 +189,8 @@ def run_training(rank, world_size, session_data, output_path, num_epochs=10):
         
         print(f"Data shape: {data.shape}")
         
-        # Create dataset with smaller chunks to avoid memory issues
-        chunk_size = min(1000, data.shape[0])  # Process in chunks of 1000
+        # Create dataset with very small chunks to avoid memory issues
+        chunk_size = min(100, data.shape[0])  # Process in chunks of 100
         dataset = []
         for i in range(0, data.shape[0], chunk_size):
             chunk = data[i:i+chunk_size]
@@ -199,10 +199,10 @@ def run_training(rank, world_size, session_data, output_path, num_epochs=10):
         # Create distributed sampler
         sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank, shuffle=True)
         
-        # Create data loader - smaller batch size for memory efficiency
+        # Create data loader - minimal batch size for memory efficiency
         data_loader = DataLoader(
             dataset,
-            batch_size=4,  # Smaller batch size for large data
+            batch_size=1,  # Minimal batch size
             sampler=sampler,
             num_workers=0,
             pin_memory=False  # Disable pin_memory for large data
