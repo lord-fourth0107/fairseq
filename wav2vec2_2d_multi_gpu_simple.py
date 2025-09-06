@@ -166,14 +166,22 @@ def run_training(rank, world_size, session_data, output_path, num_epochs=10):
         print(f"Starting Multi-GPU training on {world_size} GPUs")
         print(f"Session: {session_data['session_id']}")
     
-    # Load data - same as single GPU version
+    # Load data - memory efficient version for large datasets
     try:
         if isinstance(session_data['data'], np.ndarray):
             data = session_data['data']
         else:
-            data = np.array(session_data['data'])
+            # For large lists, sample a subset to avoid memory issues
+            raw_data = session_data['data']
+            if len(raw_data) > 10000:  # If more than 10k elements
+                print(f"Large dataset detected: {len(raw_data)} elements. Sampling 10,000 for training...")
+                # Sample every nth element to get ~10k samples
+                step = len(raw_data) // 10000
+                data = np.array(raw_data[::step])
+            else:
+                data = np.array(raw_data)
         
-        # Reshape to 2D matrix: [timePoints, channels] - same as single GPU
+        # Reshape to 2D matrix: [timePoints, channels]
         if len(data.shape) == 1:
             data = data.reshape(-1, 1)
         elif len(data.shape) > 2:
@@ -181,19 +189,23 @@ def run_training(rank, world_size, session_data, output_path, num_epochs=10):
         
         print(f"Data shape: {data.shape}")
         
-        # Create dataset - same as single GPU
-        dataset = [{'source': torch.FloatTensor(data)}]
+        # Create dataset with smaller chunks to avoid memory issues
+        chunk_size = min(1000, data.shape[0])  # Process in chunks of 1000
+        dataset = []
+        for i in range(0, data.shape[0], chunk_size):
+            chunk = data[i:i+chunk_size]
+            dataset.append({'source': torch.FloatTensor(chunk)})
         
         # Create distributed sampler
         sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank, shuffle=True)
         
-        # Create data loader - use same batch size as single GPU
+        # Create data loader - smaller batch size for memory efficiency
         data_loader = DataLoader(
             dataset,
-            batch_size=32,  # Same as single GPU
+            batch_size=4,  # Smaller batch size for large data
             sampler=sampler,
             num_workers=0,
-            pin_memory=True
+            pin_memory=False  # Disable pin_memory for large data
         )
         
         if rank == 0:
