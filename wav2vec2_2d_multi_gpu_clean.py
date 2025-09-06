@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Multi-GPU training script for wav2vec2_2d with Scaled RoPE
+Clean Multi-GPU training script for wav2vec2_2d with Scaled RoPE
 Supports distributed training across multiple GPUs
 """
 
@@ -16,7 +16,6 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler
-from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 import warnings
 warnings.filterwarnings("ignore")
@@ -26,20 +25,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'fairseq'))
 
 from fairseq.models.wav2vec.wav2vec2_2d import Wav2Vec2_2DConfig, Wav2Vec2_2DModel
 from fairseq.optim.adam import FairseqAdam
-from fairseq.optim.lr_scheduler.polynomial_decay_lr_scheduler import PolynomialDecayLRScheduler
-from fairseq.tasks.audio_pretraining import AudioPretrainingConfig
-from fairseq.tasks.audio_pretraining import AudioPretrainingTask
-from fairseq.data.audio.raw_audio_dataset import RawAudioDataset
-from fairseq.data import Dictionary
-from fairseq.criterions.wav2vec_criterion import Wav2VecCriterion, Wav2VecCriterionConfig
-from fairseq.logging.meters import AverageMeter, StopwatchMeter
-from fairseq.logging import metrics
-from fairseq import utils
-from fairseq.dataclass import FairseqDataclass
-from fairseq.distributed import fsdp_wrap
-from fairseq.distributed.fully_sharded_data_parallel import FullyShardedDataParallel
-from fairseq.modules import GradMultiply
-from fairseq.utils import buffered_arange, index_put, is_xla_tensor
 import torch.nn.functional as F
 
 
@@ -78,8 +63,6 @@ def train_2d_multi_gpu(model, data_loader, optimizer, device, rank, accumulation
     grad_norm = 0.0
     grad_norms = []
     losses = []
-    contrastive_losses = []
-    diversity_losses = []
     
     # Mixed precision training
     scaler = torch.cuda.amp.GradScaler()
@@ -143,7 +126,7 @@ def train_2d_multi_gpu(model, data_loader, optimizer, device, rank, accumulation
                         grad_norm = get_grad_norm(model)
                         scaler.step(optimizer)
                         scaler.update()
-            else:
+                    else:
                         grad_norm = get_grad_norm(model)
                         optimizer.step()
                     
@@ -152,10 +135,6 @@ def train_2d_multi_gpu(model, data_loader, optimizer, device, rank, accumulation
                 
                 # Store losses
                 losses.append(loss.item())
-                if 'contrastive_loss' in locals():
-                    contrastive_losses.append(contrastive_loss.item())
-                if 'diversity_loss' in locals():
-                    diversity_losses.append(diversity_loss.item())
                 
             except Exception as e:
                 if rank == 0:
@@ -165,12 +144,8 @@ def train_2d_multi_gpu(model, data_loader, optimizer, device, rank, accumulation
             # Update progress bar (only on rank 0)
             if rank == 0 and step % 10 == 0:
                 avg_loss = np.mean(losses[-10:]) if losses else 0.0
-                avg_contrastive = np.mean(contrastive_losses[-10:]) if contrastive_losses else 0.0
-                avg_diversity = np.mean(diversity_losses[-10:]) if diversity_losses else 0.0
                 progress.set_postfix({
                     "loss": f"{avg_loss:.4f}",
-                    "contrastive": f"{avg_contrastive:.4f}",
-                    "diversity": f"{avg_diversity:.4f}",
                     "grad": f"{grad_norm:.2f}"
                 })
                 
@@ -178,7 +153,7 @@ def train_2d_multi_gpu(model, data_loader, optimizer, device, rank, accumulation
             if rank == 0:
                 print(f"Training step error: {e}")
             continue
-
+    
     # Synchronize across all processes
     dist.barrier()
     
@@ -192,54 +167,6 @@ def train_2d_multi_gpu(model, data_loader, optimizer, device, rank, accumulation
         return 0.0, 0.0
 
 
-def validate_2d_multi_gpu(model, data_loader, device, rank):
-    """Multi-GPU validation function"""
-    model.eval()
-    losses = []
-
-    with torch.no_grad():
-        for batch in data_loader:
-            try:
-                if isinstance(batch, dict):
-                    source = batch['source'].to(device)
-                else:
-                    source = batch.to(device)
-                
-                if len(source.shape) == 3:
-                    source = source.unsqueeze(1)
-                
-                outputs = model(source=source, padding_mask=None)
-                
-                if isinstance(outputs, dict) and 'loss' in outputs:
-                    loss = outputs['loss']
-                else:
-                    # Manual loss computation
-                    x = outputs['x']
-                    y = outputs.get('y', x)
-                    logits = torch.cosine_similarity(x.unsqueeze(0), y.unsqueeze(1), dim=-1)
-                    targets = torch.zeros(logits.size(1), dtype=torch.long, device=logits.device)
-                    logits_flat = logits.view(-1, logits.size(-1))
-                    targets_flat = targets.view(-1)
-                    loss = F.cross_entropy(logits_flat, targets_flat)
-                
-                losses.append(loss.item())
-                
-            except Exception as e:
-                if rank == 0:
-                    print(f"Validation error: {e}")
-                continue
-    
-    # Synchronize and average across processes
-    dist.barrier()
-    
-    if rank == 0:
-        avg_loss = np.mean(losses) if losses else 0.0
-        print(f"Multi-GPU Validation completed - Avg Loss: {avg_loss:.4f}")
-        return avg_loss
-    else:
-        return 0.0
-
-
 def run_wav2vec2_2d_multi_gpu(rank, world_size, sessions_list, session_data, output_path, num_epochs=10):
     """Main training function for multi-GPU setup"""
     
@@ -251,9 +178,9 @@ def run_wav2vec2_2d_multi_gpu(rank, world_size, sessions_list, session_data, out
     torch.cuda.set_device(device)
     
     if rank == 0:
-        print(f"🚀 Starting Multi-GPU training on {world_size} GPUs")
-        print(f"📊 Processing session: {session_data['session_id']}")
-        print(f"📁 Output path: {output_path}")
+        print(f"Starting Multi-GPU training on {world_size} GPUs")
+        print(f"Processing session: {session_data['session_id']}")
+        print(f"Output path: {output_path}")
     
     # Load and prepare data
     try:
@@ -291,11 +218,11 @@ def run_wav2vec2_2d_multi_gpu(rank, world_size, sessions_list, session_data, out
         )
         
         if rank == 0:
-            print(f"✅ Data loaded successfully: {len(dataset)} samples")
-            print(f"📊 Data shape: {data.shape}")
+            print(f"Data loaded successfully: {len(dataset)} samples")
+            print(f"Data shape: {data.shape}")
         
     except Exception as e:
-        print(f"❌ Data loading error: {e}")
+        print(f"Data loading error: {e}")
         cleanup_distributed()
         return
     
@@ -391,12 +318,12 @@ def run_wav2vec2_2d_multi_gpu(rank, world_size, sessions_list, session_data, out
         # Wrap with DDP
         model = DDP(model, device_ids=[rank], output_device=rank, find_unused_parameters=True)
         
-    if rank == 0:
-            print(f"✅ Model created successfully on GPU {rank}")
-            print(f"📊 Model parameters: {sum(p.numel() for p in model.parameters()):,}")
+        if rank == 0:
+            print(f"Model created successfully on GPU {rank}")
+            print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
         
     except Exception as e:
-        print(f"❌ Model creation error: {e}")
+        print(f"Model creation error: {e}")
         cleanup_distributed()
         return
     
@@ -411,20 +338,20 @@ def run_wav2vec2_2d_multi_gpu(rank, world_size, sessions_list, session_data, out
         )
         
         if rank == 0:
-            print(f"✅ Optimizer created successfully")
+            print(f"Optimizer created successfully")
         
     except Exception as e:
-        print(f"❌ Optimizer creation error: {e}")
+        print(f"Optimizer creation error: {e}")
         cleanup_distributed()
         return
     
     # Training loop
     if rank == 0:
-        print(f"🚀 Starting training for {num_epochs} epochs...")
+        print(f"Starting training for {num_epochs} epochs...")
     
     for epoch in range(num_epochs):
         if rank == 0:
-            print(f"\n📅 Epoch {epoch + 1}/{num_epochs}")
+            print(f"Epoch {epoch + 1}/{num_epochs}")
         
         # Set epoch for distributed sampler
         sampler.set_epoch(epoch)
@@ -434,11 +361,8 @@ def run_wav2vec2_2d_multi_gpu(rank, world_size, sessions_list, session_data, out
             model, data_loader, optimizer, device, rank, accumulation_steps=4
         )
         
-        # Validation
-        val_loss = validate_2d_multi_gpu(model, data_loader, device, rank)
-
         if rank == 0:
-            print(f"Epoch {epoch + 1} - Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, Grad Norm: {grad_norm:.4f}")
+            print(f"Epoch {epoch + 1} - Train Loss: {train_loss:.4f}, Grad Norm: {grad_norm:.4f}")
     
     # Save model (only on rank 0)
     if rank == 0:
@@ -452,13 +376,12 @@ def run_wav2vec2_2d_multi_gpu(rank, world_size, sessions_list, session_data, out
                 'config': w2v2_2d_config,
                 'epoch': num_epochs,
                 'train_loss': train_loss,
-                'val_loss': val_loss
             }, model_path)
             
-            print(f"✅ Model saved to: {model_path}")
+            print(f"Model saved to: {model_path}")
             
         except Exception as e:
-            print(f"❌ Model saving error: {e}")
+            print(f"Model saving error: {e}")
     
     # Cleanup
     cleanup_distributed()
@@ -480,11 +403,11 @@ def main():
     
     # Check available GPUs
     if not torch.cuda.is_available():
-        print("❌ CUDA not available. Multi-GPU training requires CUDA.")
+        print("CUDA not available. Multi-GPU training requires CUDA.")
         return
     
     world_size = min(args.world_size, torch.cuda.device_count())
-    print(f"🚀 Using {world_size} GPUs for training")
+    print(f"Using {world_size} GPUs for training")
     
     # Load session data
     try:
@@ -503,18 +426,18 @@ def main():
                 })
         
         if not sessions_list:
-            print("❌ No pickle files found in data path")
+            print("No pickle files found in data path")
             return
         
-        print(f"✅ Found {len(sessions_list)} sessions")
+        print(f"Found {len(sessions_list)} sessions")
         
     except Exception as e:
-        print(f"❌ Error loading data: {e}")
+        print(f"Error loading data: {e}")
         return
     
     # Process each session
     for i, session_data in enumerate(sessions_list):
-        print(f"\n🔄 Processing session {i+1}/{len(sessions_list)}: {session_data['session_id']}")
+        print(f"Processing session {i+1}/{len(sessions_list)}: {session_data['session_id']}")
         
         # Launch multi-GPU training
         mp.spawn(
@@ -524,7 +447,7 @@ def main():
             join=True
         )
         
-        print(f"✅ Completed session {i+1}/{len(sessions_list)}")
+        print(f"Completed session {i+1}/{len(sessions_list)}")
 
 
 if __name__ == "__main__":
