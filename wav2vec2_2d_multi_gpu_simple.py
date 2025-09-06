@@ -371,7 +371,7 @@ def main():
     parser.add_argument('--data_path', type=str, default='/scratch/mkp6112/LFP/region_decoding/data/Allen/data/')
     parser.add_argument('--output_path', type=str, default='./outputs')
     parser.add_argument('--num_epochs', type=int, default=10)
-    parser.add_argument('--world_size', type=int, default=torch.cuda.device_count())
+    parser.add_argument('--world_size', type=int, default=1)  # Start with 1 GPU
     
     args = parser.parse_args()
     
