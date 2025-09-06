@@ -267,7 +267,6 @@ def run_training(rank, world_size, session_data, output_path, num_epochs=10):
         # Negative sampling parameters - same as single GPU
         num_negatives=20,
         cross_sample_negatives=5,
-        codebook_negatives=10,
         
         # Temporal parameters - same as single GPU
         temporal_conv1d_enabled=True,
