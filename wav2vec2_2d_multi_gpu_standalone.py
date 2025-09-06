@@ -281,7 +281,7 @@ def run_training(rank, world_size, session_data, output_path, num_epochs=10):
         
         dataset = [{'source': torch.FloatTensor(data)}]
         sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank, shuffle=True)
-        data_loader = DataLoader(dataset, batch_size=32, sampler=sampler, num_workers=4, pin_memory=True)
+        data_loader = DataLoader(dataset, batch_size=1, sampler=sampler, num_workers=0, pin_memory=False)
         
         if rank == 0:
             print(f"Data loaded: {data.shape}")
@@ -296,9 +296,9 @@ def run_training(rank, world_size, session_data, output_path, num_epochs=10):
         model = SimpleWav2Vec2_2D(
             input_height=data.shape[0],
             input_width=data.shape[1],
-            embed_dim=768,  # Full size for A100
-            num_layers=12,  # Full transformer
-            num_heads=12    # Full attention
+            embed_dim=128,  # Small for testing
+            num_layers=2,   # Minimal layers
+            num_heads=4     # Minimal attention
         )
         model = model.to(device)
         model = DDP(model, device_ids=[rank], output_device=rank, find_unused_parameters=True)
