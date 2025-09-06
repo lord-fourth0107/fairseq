@@ -332,23 +332,23 @@ def main():
                        help='Path to data directory')
     parser.add_argument('--output_path', type=str, default='./output',
                        help='Path to save outputs')
-    parser.add_argument('--num_epochs', type=int, default=2,
+    parser.add_argument('--num_epochs', type=int, default=20,
                        help='Number of training epochs')
-    parser.add_argument('--batch_size', type=int, default=1,
+    parser.add_argument('--batch_size', type=int, default=8,
                        help='Batch size per GPU')
-    parser.add_argument('--learning_rate', type=float, default=1e-4,
+    parser.add_argument('--learning_rate', type=float, default=5e-4,
                        help='Learning rate')
-    parser.add_argument('--max_samples', type=int, default=1000,
-                       help='Maximum samples to load')
+    parser.add_argument('--max_samples', type=int, default=150000,
+                       help='Maximum samples to load (half of 301k dataset)')
     parser.add_argument('--chunk_size', type=int, default=100,
                        help='Chunk size for data processing')
     parser.add_argument('--input_dim', type=int, default=3750,
                        help='Input dimension')
-    parser.add_argument('--embed_dim', type=int, default=128,
+    parser.add_argument('--embed_dim', type=int, default=384,
                        help='Embedding dimension')
-    parser.add_argument('--num_layers', type=int, default=2,
+    parser.add_argument('--num_layers', type=int, default=6,
                        help='Number of transformer layers')
-    parser.add_argument('--num_heads', type=int, default=4,
+    parser.add_argument('--num_heads', type=int, default=6,
                        help='Number of attention heads')
     parser.add_argument('--world_size', type=int, default=1,
                        help='Number of GPUs to use')
