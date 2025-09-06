@@ -143,7 +143,7 @@ def train_2d_multi_gpu(model, data_loader, optimizer, device, rank, accumulation
                         grad_norm = get_grad_norm(model)
                         scaler.step(optimizer)
                         scaler.update()
-            else:
+                    else:
                         grad_norm = get_grad_norm(model)
                         optimizer.step()
                     
