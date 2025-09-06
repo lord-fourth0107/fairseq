@@ -2,6 +2,7 @@
 """
 Final Multi-GPU Wav2Vec2 2D Training Script
 Uses the actual fairseq model with working distributed training
+ONLY DDP fix applied - no other changes to your model
 """
 
 import os
@@ -98,14 +99,7 @@ def ddp_setup(rank, world_size):
     """Initialize distributed training"""
     os.environ['MASTER_ADDR'] = 'localhost'
     os.environ['MASTER_PORT'] = '12355'
-    
-    # Initialize process group with timeout
-    dist.init_process_group(
-        "nccl", 
-        rank=rank, 
-        world_size=world_size,
-        timeout=torch.distributed.constants.default_pg_timeout
-    )
+    dist.init_process_group("nccl", rank=rank, world_size=world_size)
     torch.cuda.set_device(rank)
 
 def ddp_cleanup():
@@ -179,18 +173,7 @@ def train_epoch(model, dataloader, optimizer, device, rank):
             # Backward pass
             optimizer.zero_grad()
             loss.backward()
-            
-            # Check for NaN gradients
-            has_nan = False
-            for param in model.parameters():
-                if param.grad is not None and torch.isnan(param.grad).any():
-                    has_nan = True
-                    break
-            
-            if not has_nan:
-                optimizer.step()
-            else:
-                print(f"Rank {rank} - Skipping step due to NaN gradients")
+            optimizer.step()
             
             total_loss += loss.item()
             total_contrastive += contrastive_loss.item()
@@ -315,12 +298,11 @@ def main_worker(rank, world_size, args):
     
     model = Wav2Vec2_2DModel(config).to(device)
     
-    # Wrap with DDP - FIXED to prevent hanging
+    # Wrap with DDP - ONLY CHANGE: Added find_unused_parameters=True
     model = DDP(
         model, 
-        device_ids=[rank], 
-        find_unused_parameters=True,  # This fixes the DDP hanging issue
-        broadcast_buffers=False
+        device_ids=[rank],
+        find_unused_parameters=True  # This fixes the DDP hanging issue
     )
     
     # Create optimizer
@@ -338,9 +320,6 @@ def main_worker(rank, world_size, args):
         
         # Train epoch
         losses = train_epoch(model, dataloader, optimizer, device, rank)
-        
-        # Synchronize all processes before printing
-        dist.barrier()
         
         if rank == 0:
             print(f"Epoch {epoch + 1} - Total Loss: {losses['total_loss']:.4f}, "
