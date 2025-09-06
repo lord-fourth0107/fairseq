@@ -130,19 +130,44 @@ def train_epoch(model, dataloader, optimizer, device, rank):
                     # Repeat the 3750-dim vector 93 times to create 93 channels
                     batch = batch.unsqueeze(1).repeat(1, 1, 1, 93)  # [batch_size, 1, 3750, 93]
             
-            # Forward pass
-            result = model(batch)
+            # Forward pass - use same approach as single GPU
+            outputs = model(
+                source=batch,
+                mask_indices=None,  # Let model handle masking internally
+                features_only=False
+            )
             
-            # Extract losses
-            if isinstance(result, dict):
-                loss = result.get('loss', torch.tensor(0.0, device=device))
-                contrastive_loss = result.get('contrastive_loss', torch.tensor(0.0, device=device))
-                diversity_loss = result.get('diversity_loss', torch.tensor(0.0, device=device))
+            # Extract losses - same as single GPU
+            if hasattr(outputs, 'loss') and outputs.loss is not None:
+                loss = outputs.loss
+                contrastive_loss = getattr(outputs, 'contrastive_loss', torch.tensor(0.0, device=device))
+                diversity_loss = getattr(outputs, 'diversity_loss', torch.tensor(0.0, device=device))
             else:
-                # Fallback if result is not a dict
-                loss = torch.tensor(0.0, device=device)
-                contrastive_loss = torch.tensor(0.0, device=device)
-                diversity_loss = torch.tensor(0.0, device=device)
+                # Manual loss computation like single GPU
+                try:
+                    # Get features and logits
+                    features = outputs['features'] if 'features' in outputs else outputs['x']
+                    logits = outputs['logits'] if 'logits' in outputs else None
+                    
+                    if logits is not None:
+                        # Contrastive loss computation
+                        targets = torch.zeros(logits.size(0), logits.size(1), dtype=torch.long, device=device)
+                        contrastive_loss = nn.CrossEntropyLoss()(logits.view(-1, logits.size(-1)), targets.view(-1))
+                        
+                        # Diversity loss (placeholder)
+                        diversity_loss = torch.tensor(0.0, device=device)
+                        
+                        # Total loss
+                        loss = contrastive_loss + 0.1 * diversity_loss
+                    else:
+                        # Fallback to MSE loss
+                        target = torch.zeros_like(features)
+                        loss = nn.MSELoss()(features, target)
+                        contrastive_loss = torch.tensor(0.0, device=device)
+                        diversity_loss = torch.tensor(0.0, device=device)
+                except Exception as e:
+                    print(f"Rank {rank} - Loss computation error: {e}")
+                    continue
             
             # Backward pass
             optimizer.zero_grad()
