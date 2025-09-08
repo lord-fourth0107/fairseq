@@ -255,8 +255,8 @@ def main_worker(rank, world_size, args):
     
     # Create Wav2Vec2 2D model - EXACT SAME CONFIG as single GPU
     config = Wav2Vec2_2DConfig(
-        # 2D CNN feature extraction layers
-        conv_2d_feature_layers="[(512, 10, 5), (512, 3, 2), (512, 3, 2), (512, 3, 2), (512, 3, 2), (512, 2, 2), (512, 2, 2)]",
+        # 2D CNN feature extraction layers - FIXED to prevent zero output
+        conv_2d_feature_layers="[(64, 10, 1), (128, 10, 1), (256, 10, 1), (512, 10, 1)]",
         
         # Input dimensions
         input_channels=1,
