@@ -177,15 +177,13 @@ class LazySessionIterableDataset(torch.utils.data.IterableDataset):
 
 def ddp_setup(rank, world_size):
     """Initialize distributed training"""
-    os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '12355'
-    
-    # Initialize process group with timeout
+    # Use env:// rendezvous so torchrun-provided env vars are honored
     dist.init_process_group(
-        "nccl", 
-        rank=rank, 
+        backend="nccl",
+        init_method="env://",
+        rank=rank,
         world_size=world_size,
-        timeout=torch.distributed.constants.default_pg_timeout
+        timeout=torch.distributed.constants.default_pg_timeout,
     )
     torch.cuda.set_device(rank)
 
