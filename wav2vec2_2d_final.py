@@ -223,37 +223,38 @@ def train_epoch(model, dataloader, optimizer, device, rank):
                 features_only=False
             )
             
-            # Extract losses - same as single GPU
-            if hasattr(outputs, 'loss') and outputs.loss is not None:
-                loss = outputs.loss
-                contrastive_loss = getattr(outputs, 'contrastive_loss', torch.tensor(0.0, device=device))
-                diversity_loss = getattr(outputs, 'diversity_loss', torch.tensor(0.0, device=device))
-            else:
-                # Manual loss computation like single GPU
-                try:
-                    # Get features and logits
-                    features = outputs['features'] if 'features' in outputs else outputs['x']
-                    logits = outputs['logits'] if 'logits' in outputs else None
-                    
-                    if logits is not None:
-                        # Contrastive loss computation
-                        targets = torch.zeros(logits.size(0), logits.size(1), dtype=torch.long, device=device)
-                        contrastive_loss = nn.CrossEntropyLoss()(logits.view(-1, logits.size(-1)), targets.view(-1))
-                        
-                        # Diversity loss (placeholder)
-                        diversity_loss = torch.tensor(0.0, device=device)
-                        
-                        # Total loss
-                        loss = contrastive_loss + 0.1 * diversity_loss
+            # Compute contrastive and diversity losses from model outputs dict
+            try:
+                # logits shape from model is [C, B, T]
+                if isinstance(outputs, dict) and 'x' in outputs:
+                    raw_logits = outputs['x']
+                    C, B, T = raw_logits.shape
+                    logits_bt_c = raw_logits.permute(1, 2, 0).contiguous().view(-1, C)  # [B*T, C]
+                    targets_bt = torch.zeros(B * T, dtype=torch.long, device=device)  # positives at index 0
+                    contrastive_loss = nn.CrossEntropyLoss()(logits_bt_c, targets_bt)
+
+                    # Diversity loss: prefer codebook diversity if available, else 0
+                    if ('prob_perplexity' in outputs) and ('num_vars' in outputs):
+                        num_vars = outputs['num_vars']
+                        prob_ppl = outputs['prob_perplexity']
+                        diversity_loss = (num_vars - prob_ppl) / max(num_vars, 1)
+                        if isinstance(diversity_loss, torch.Tensor):
+                            diversity_loss = diversity_loss.mean()
+                        else:
+                            diversity_loss = torch.tensor(float(diversity_loss), device=device)
                     else:
-                        # Fallback to MSE loss
-                        target = torch.zeros_like(features)
-                        loss = nn.MSELoss()(features, target)
-                        contrastive_loss = torch.tensor(0.0, device=device)
                         diversity_loss = torch.tensor(0.0, device=device)
-                except Exception as e:
-                    print(f"Rank {rank} - Loss computation error: {e}")
-                    continue
+
+                    loss = contrastive_loss + 0.1 * diversity_loss
+                else:
+                    # Fallback: simple feature penalty if logits missing
+                    feat_pen = outputs.get('features_pen', torch.tensor(0.0, device=device)) if isinstance(outputs, dict) else torch.tensor(0.0, device=device)
+                    loss = feat_pen if isinstance(feat_pen, torch.Tensor) else torch.tensor(float(feat_pen), device=device)
+                    contrastive_loss = torch.tensor(0.0, device=device)
+                    diversity_loss = torch.tensor(0.0, device=device)
+            except Exception as e:
+                print(f"Rank {rank} - Loss computation error: {e}")
+                continue
             
             # Backward pass
             optimizer.zero_grad()
