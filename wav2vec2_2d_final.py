@@ -122,6 +122,50 @@ class ModifiedSessionDataset(Dataset):
                 return tensor
         # Fallback (should not happen)
         raise IndexError(f"Index out of range: {idx}")
+
+class LazySessionIterableDataset(torch.utils.data.IterableDataset):
+    """True lazy IterableDataset over .pickle files, with rank-based sharding.
+
+    - Avoids pre-reading file lengths. Starts yielding immediately.
+    - Shards samples across distributed ranks by round-robin on a global counter.
+    - Expects each pickle to be a list of samples (or tuples where first item is the array).
+    """
+    def __init__(self, data_dir: str):
+        super().__init__()
+        self.data_dir = data_dir
+        self.files = sorted(
+            [os.path.join(self.data_dir, f) for f in os.listdir(self.data_dir) if f.endswith('.pickle')]
+        )
+        if len(self.files) == 0:
+            print(f"No pickle files found in {self.data_dir}")
+
+    def _iter_all(self):
+        for fp in self.files:
+            try:
+                with open(fp, 'rb') as f:
+                    data = pickle.load(f)
+            except Exception as e:
+                print(f"Skipping {os.path.basename(fp)} due to load error: {e}")
+                continue
+            if not isinstance(data, list) or len(data) == 0:
+                continue
+            for item in data:
+                if isinstance(item, tuple) and len(item) > 0:
+                    item = item[0]
+                tensor = torch.as_tensor(item, dtype=torch.float32)
+                yield tensor
+
+    def __iter__(self):
+        # Shard by rank across all yielded samples
+        rank = 0
+        world_size = 1
+        if dist.is_available() and dist.is_initialized():
+            rank = dist.get_rank()
+            world_size = dist.get_world_size()
+
+        for idx, sample in enumerate(self._iter_all()):
+            if (idx % world_size) == rank:
+                yield sample
     
     def __len__(self):
         return len(self.data)
