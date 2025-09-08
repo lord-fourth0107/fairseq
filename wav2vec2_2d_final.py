@@ -25,11 +25,16 @@ sys.path.insert(0, '/vast/us2193/fairseq')
 from fairseq.models.wav2vec.wav2vec2_2d import Wav2Vec2_2DConfig, Wav2Vec2_2DModel
 
 class ModifiedSessionDataset(Dataset):
-    """Dataset that handles tuple format data"""
+    """Dataset that loads .pickle files (directory or explicit list) and handles tuple data.
+
+    data_path can be either:
+      - a directory containing .pickle files
+      - a list of absolute file paths to .pickle files
+    """
     
-    def __init__(self, data_path, max_samples=1000, chunk_size=100):
+    def __init__(self, data_path, max_samples=None, chunk_size=100):
         self.data_path = data_path
-        self.max_samples = max_samples
+        self.max_samples = max_samples  # None means no cap
         self.chunk_size = chunk_size
         self.data = []
         self._load_data()
@@ -38,53 +43,59 @@ class ModifiedSessionDataset(Dataset):
         """Load and process data from pickle files"""
         print("Loading data...")
         
-        # Get all pickle files
-        files = [f for f in os.listdir(self.data_path) if f.endswith('.pickle')]
+        # Resolve file list from directory or explicit list
+        if isinstance(self.data_path, (list, tuple)):
+            files = [f if os.path.isabs(f) else os.path.join(os.getcwd(), f) for f in self.data_path]
+        else:
+            files = sorted([
+                os.path.join(self.data_path, f)
+                for f in os.listdir(self.data_path)
+                if f.endswith('.pickle')
+            ])
         print(f"Found {len(files)} pickle files")
         
-        # Load first file for now
-        if files:
-            filepath = os.path.join(self.data_path, files[0])
-            print(f"Loading: {files[0]}")
+        total_loaded = 0
+        for filepath in files:
+            if self.max_samples is not None and total_loaded >= self.max_samples:
+                break
+            fname = os.path.basename(filepath)
+            print(f"Loading: {fname}")
+            try:
+                with open(filepath, 'rb') as f:
+                    raw_data = pickle.load(f)
+            except Exception as e:
+                print(f"  Skipping {fname}: failed to load ({e})")
+                continue
             
-            with open(filepath, 'rb') as f:
-                raw_data = pickle.load(f)
+            if not (isinstance(raw_data, list) and len(raw_data) > 0):
+                print(f"  Skipping {fname}: not a non-empty list")
+                continue
             
-            print(f"Raw data type: {type(raw_data)}")
-            print(f"Raw data length: {len(raw_data)}")
+            # How many samples to take from this file (respect global cap if set)
+            remaining = None if self.max_samples is None else max(0, self.max_samples - total_loaded)
+            if remaining is not None and remaining == 0:
+                break
+            take = len(raw_data) if remaining is None else min(len(raw_data), remaining)
+            selected = raw_data[:take]
             
-            if isinstance(raw_data, list) and len(raw_data) > 0:
-                # Sample data
-                step = max(1, len(raw_data) // self.max_samples)
-                sampled_data = raw_data[::step]
-                print(f"Sampled {len(sampled_data)} elements")
-                
-                # Handle tuple format
-                if isinstance(sampled_data[0], tuple):
-                    print("Processing tuple format data...")
-                    # Extract first element from each tuple
-                    first_elements = [item[0] for item in sampled_data if len(item) > 0]
-                    print(f"Extracted {len(first_elements)} first elements")
-                    
-                    if first_elements and hasattr(first_elements[0], 'shape'):
-                        print(f"First element shape: {first_elements[0].shape}")
-                        # Convert to numpy and then to list of tensors
-                        np_data = np.array(first_elements)
-                        print(f"Numpy data shape: {np_data.shape}")
-                        
-                        # Convert to list of tensors
-                        self.data = [torch.FloatTensor(arr) for arr in np_data]
-                        print(f"Converted to {len(self.data)} tensors")
-                    else:
-                        print("No valid array data found in tuples")
-                        self.data = []
+            # Handle tuple format by taking first item
+            if isinstance(selected[0], tuple):
+                first_elements = [item[0] for item in selected if len(item) > 0]
+                if first_elements and hasattr(first_elements[0], 'shape'):
+                    np_data = np.array(first_elements)
+                    tensors = [torch.FloatTensor(arr) for arr in np_data]
+                    self.data.extend(tensors)
                 else:
-                    # Direct conversion if not tuples
-                    np_data = np.array(sampled_data)
-                    self.data = [torch.FloatTensor(arr) for arr in np_data]
-                    print(f"Direct conversion to {len(self.data)} tensors")
+                    print(f"  {fname}: tuple format without array payload; skipping")
+            else:
+                np_data = np.array(selected)
+                tensors = [torch.FloatTensor(arr) for arr in np_data]
+                self.data.extend(tensors)
+            
+            total_loaded += take
+            print(f"  Added {take} samples from {fname} (total: {total_loaded})")
         
-        print(f"Final dataset size: {len(self.data)}")
+        print(f"Final dataset size: {len(self.data)} (from {len(files)} files)")
     
     def __len__(self):
         return len(self.data)

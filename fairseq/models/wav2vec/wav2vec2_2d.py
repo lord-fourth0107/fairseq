@@ -909,13 +909,7 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
         return negs, neg_idxs
 
     def compute_preds(self, x, y, negatives):
-        # Debug: Print tensor shapes to understand the mismatch
-        # if not hasattr(self, '_compute_preds_debug_printed'):
-        #     print(f"🔍 Compute Preds Debug:")
-        #     print(f"   x shape: {x.shape}")
-        #     print(f"   y shape: {y.shape}")
-        #     print(f"   negatives shape: {negatives.shape}")
-        #     self._compute_preds_debug_printed = True
+        # Debug prints disabled
         
         # Skip neg_is_pos check entirely to avoid dimension issues
         neg_is_pos = torch.zeros(y.shape[0], y.shape[1], dtype=torch.bool, device=y.device)
@@ -967,8 +961,7 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
         if neg_is_pos.any():
             logits[1:][neg_is_pos] = float("-inf")
 
-        if not hasattr(self, '_compute_preds_debug_printed'):
-            print(f"   ✅ Final logits shape: {logits.shape}")
+        # print(f"   ✅ Final logits shape: {logits.shape}")
         
         return logits
 
@@ -1160,9 +1153,9 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
             if padding_mask is not None:
                 padding_mask = padding_mask[:, :-time_steps_to_drop]
 
-        print(f"🔍 Before post_extract_proj: features shape = {features.shape}")
+        # print(f"🔍 Before post_extract_proj: features shape = {features.shape}")
         if self.post_extract_proj is not None:
-            print(f"🔍 post_extract_proj exists: {self.post_extract_proj.in_features} -> {self.post_extract_proj.out_features}")
+            # print(f"🔍 post_extract_proj exists: {self.post_extract_proj.in_features} -> {self.post_extract_proj.out_features}")
             
             # Proactively check if dimensions match
             expected_input_size = features.shape[-1]
@@ -1183,7 +1176,7 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
             
             try:
                 features = self.post_extract_proj(features)
-                print(f"🔍 post_extract_proj success: output shape = {features.shape}")
+                # print(f"🔍 post_extract_proj success: output shape = {features.shape}")
             except RuntimeError as e:
                 print(f"🔍 Post Extract Proj Debug:")
                 print(f"   Features shape: {features.shape}")
@@ -1229,7 +1222,7 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
             
             # Apply Scaled RoPE to features
             features = self.scaled_rope(features, channel_positions)
-            print(f"✅ Applied Scaled RoPE to features: {features.shape}")
+            # print(f"✅ Applied Scaled RoPE to features: {features.shape}")
 
         # Legacy spatial embedding (deprecated)
         if self.spatial_embedding is not None:
@@ -1349,9 +1342,7 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
             x, layer_results = self.encoder(
                 x, padding_mask=padding_mask, layer=layer, corpus_key=corpus_key
             )
-            print(f" Encoder call successful:")
-            print(f"   x output shape: {x.shape}")
-            print(f"   layer_results length: {len(layer_results) if layer_results else 'None'}")
+            # Encoder call successful (debug prints disabled)
         except Exception as e:
             print(f" Encoder call failed: {e}")
             raise
@@ -1497,12 +1488,11 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
                     raise
 
         if not is_xla_tensor(x) and mask_indices is not None:
-            print(f"🔍 Applying masking to x...")
-            print(f"   x shape: {x.shape}")
+            # Applying masking to x (debug prints disabled)
             # mask_indices details suppressed
             try:
                 x = x[mask_indices].view(x.size(0), -1, x.size(-1))
-                print(f"   ✅ Masking applied successfully: {x.shape}")
+                # print(f"   ✅ Masking applied successfully: {x.shape}")
             except RuntimeError as e:
                 # Debug: Print tensor shapes to understand the mismatch
                 if not hasattr(self, '_mask_reshape_debug_printed'):
