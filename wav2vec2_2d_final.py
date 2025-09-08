@@ -25,7 +25,10 @@ sys.path.insert(0, '/vast/us2193/fairseq')
 from fairseq.models.wav2vec.wav2vec2_2d import Wav2Vec2_2DConfig, Wav2Vec2_2DModel
 
 class ModifiedSessionDataset(Dataset):
-    """Dataset that loads .pickle files (directory or explicit list) and handles tuple data.
+    """Lazy-loading dataset over .pickle files (directory or explicit list).
+
+    Each pickle is expected to be a list where each element is either a
+    numpy-like array or a tuple whose first element is the array.
 
     data_path can be either:
       - a directory containing .pickle files
@@ -34,16 +37,19 @@ class ModifiedSessionDataset(Dataset):
     
     def __init__(self, data_path, max_samples=None, chunk_size=100):
         self.data_path = data_path
-        self.max_samples = max_samples  # None means no cap
+        self.max_samples = None if (max_samples is None or (isinstance(max_samples, int) and max_samples <= 0)) else max_samples
         self.chunk_size = chunk_size
-        self.data = []
-        self._load_data()
+        # Index over files: list of dicts {path, start, count}
+        self.file_index = []
+        self.total_samples = 0
+        # Simple last-file cache to avoid reloading the same pickle repeatedly
+        self._cache_path = None
+        self._cache_data = None
+        self._build_index()
     
-    def _load_data(self):
-        """Load and process data from pickle files"""
-        print("Loading data...")
-        
-        # Resolve file list from directory or explicit list
+    def _build_index(self):
+        print("Indexing data files (lazy loading)...")
+        # Resolve file list
         if isinstance(self.data_path, (list, tuple)):
             files = [f if os.path.isabs(f) else os.path.join(os.getcwd(), f) for f in self.data_path]
         else:
@@ -53,49 +59,69 @@ class ModifiedSessionDataset(Dataset):
                 if f.endswith('.pickle')
             ])
         print(f"Found {len(files)} pickle files")
-        
-        total_loaded = 0
+
+        start = 0
         for filepath in files:
-            if self.max_samples is not None and total_loaded >= self.max_samples:
-                break
             fname = os.path.basename(filepath)
-            print(f"Loading: {fname}")
             try:
                 with open(filepath, 'rb') as f:
                     raw_data = pickle.load(f)
             except Exception as e:
-                print(f"  Skipping {fname}: failed to load ({e})")
+                print(f"  Skipping {fname}: failed to load for indexing ({e})")
                 continue
-            
             if not (isinstance(raw_data, list) and len(raw_data) > 0):
                 print(f"  Skipping {fname}: not a non-empty list")
                 continue
-            
-            # How many samples to take from this file (respect global cap if set)
-            remaining = None if self.max_samples is None else max(0, self.max_samples - total_loaded)
-            if remaining is not None and remaining == 0:
-                break
-            take = len(raw_data) if remaining is None else min(len(raw_data), remaining)
-            selected = raw_data[:take]
-            
-            # Handle tuple format by taking first item
-            if isinstance(selected[0], tuple):
-                first_elements = [item[0] for item in selected if len(item) > 0]
-                if first_elements and hasattr(first_elements[0], 'shape'):
-                    np_data = np.array(first_elements)
-                    tensors = [torch.FloatTensor(arr) for arr in np_data]
-                    self.data.extend(tensors)
-                else:
-                    print(f"  {fname}: tuple format without array payload; skipping")
+            file_len = len(raw_data)
+            # Respect global max_samples cap at index time
+            if self.max_samples is not None:
+                remaining = self.max_samples - self.total_samples
+                if remaining <= 0:
+                    break
+                file_take = min(file_len, remaining)
             else:
-                np_data = np.array(selected)
-                tensors = [torch.FloatTensor(arr) for arr in np_data]
-                self.data.extend(tensors)
-            
-            total_loaded += take
-            print(f"  Added {take} samples from {fname} (total: {total_loaded})")
-        
-        print(f"Final dataset size: {len(self.data)} (from {len(files)} files)")
+                file_take = file_len
+            if file_take <= 0:
+                continue
+            self.file_index.append({"path": filepath, "start": start, "count": file_take})
+            start += file_take
+            self.total_samples += file_take
+            print(f"  Indexed {file_take} from {fname} (total indexed: {self.total_samples})")
+        print(f"Final indexed samples: {self.total_samples} across {len(self.file_index)} files")
+
+    def __len__(self):
+        return self.total_samples
+
+    def _load_file_into_cache(self, path):
+        if self._cache_path == path and self._cache_data is not None:
+            return
+        with open(path, 'rb') as f:
+            raw = pickle.load(f)
+        self._cache_path = path
+        self._cache_data = raw
+
+    def __getitem__(self, idx):
+        # Map global idx to file and local idx
+        if idx < 0 or idx >= self.total_samples:
+            idx = idx % self.total_samples
+        # Binary search over file_index (linear is fine for modest counts)
+        for entry in self.file_index:
+            start = entry["start"]
+            count = entry["count"]
+            if start <= idx < start + count:
+                local_idx = idx - start
+                path = entry["path"]
+                # Load file (cached when possible)
+                self._load_file_into_cache(path)
+                sample = self._cache_data[local_idx]
+                # If sample is a tuple, take the first element
+                if isinstance(sample, tuple) and len(sample) > 0:
+                    sample = sample[0]
+                # Convert to tensor
+                tensor = torch.as_tensor(sample, dtype=torch.float32)
+                return tensor
+        # Fallback (should not happen)
+        raise IndexError(f"Index out of range: {idx}")
     
     def __len__(self):
         return len(self.data)
