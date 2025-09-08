@@ -891,14 +891,7 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
 
         negs = y[neg_idxs.view(-1)]
         
-        # Debug: Print dimensions to understand the issue (only for first call)
-        if not hasattr(self, '_neg_debug_printed'):
-            print(f"🔍 Negative Sampling Debug:")
-            print(f"   y shape: {y.shape}")
-            print(f"   neg_idxs shape: {neg_idxs.shape}")
-            print(f"   negs shape: {negs.shape}")
-            print(f"   Expected reshape: bsz={bsz}, num={num}, n_neg={self.n_negatives}, cross_neg={self.cross_sample_negatives}, fsz={fsz}")
-            self._neg_debug_printed = True
+        # Debug prints disabled
         
         # Use original wav2vec2.0 reshape
         negs = negs.view(
@@ -1333,9 +1326,9 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
             x = features  # Use original features without masking
             y = unmasked_features  # Use original unmasked features
 
-        print(f"🔍 Before encoder call:")
-        print(f"   x shape: {x.shape}")
-        print(f"   padding_mask: {padding_mask}")
+        # print(f"🔍 Before encoder call:")
+        # print(f"   x shape: {x.shape}")
+        # print(f"   padding_mask: {padding_mask}")
         # mask_indices details suppressed
         
         try:
