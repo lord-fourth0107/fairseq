@@ -177,6 +177,9 @@ class LazySessionIterableDataset(torch.utils.data.IterableDataset):
 
 def ddp_setup(rank, world_size):
     """Initialize distributed training"""
+    # Set the rank environment variable for this process
+    os.environ['RANK'] = str(rank)
+    
     # Use env:// rendezvous so torchrun-provided env vars are honored
     dist.init_process_group(
         backend="nccl",
@@ -468,6 +471,12 @@ def main():
     print(f"Data path: {args.data_path}")
     print(f"Batch size per GPU: {args.batch_size}")
     print(f"Max samples: {args.max_samples}")
+    
+    # Set up environment variables for distributed training
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = '12355'
+    os.environ['WORLD_SIZE'] = str(args.world_size)
+    os.environ['RANK'] = '0'  # Will be overridden by mp.spawn
     
     # Launch distributed training
     mp.spawn(main_worker, args=(args.world_size, args), nprocs=args.world_size, join=True)
