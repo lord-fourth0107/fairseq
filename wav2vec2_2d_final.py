@@ -198,22 +198,44 @@ def ddp_cleanup():
 def create_session_datasets(data_path, train_sessions, val_sessions, test_sessions, max_samples_per_split=None):
     """Create separate datasets for train/val/test based on session splits"""
     
+    # First, find all pickle files in the data directory
+    all_pickle_files = []
+    if os.path.isdir(data_path):
+        for root, dirs, files in os.walk(data_path):
+            for file in files:
+                if file.endswith('.pickle'):
+                    all_pickle_files.append(os.path.join(root, file))
+    else:
+        print(f"Error: Data path {data_path} is not a directory")
+        return None, None, None
+    
+    print(f"Found {len(all_pickle_files)} pickle files in {data_path}")
+    if len(all_pickle_files) > 0:
+        print("Sample files found:")
+        for i, file in enumerate(all_pickle_files[:5]):  # Show first 5 files
+            print(f"  {i+1}. {os.path.basename(file)}")
+        if len(all_pickle_files) > 5:
+            print(f"  ... and {len(all_pickle_files) - 5} more files")
+    
     def create_dataset_from_sessions(sessions, max_samples=None):
-        """Create dataset from specific sessions"""
-        all_files = []
+        """Create dataset from specific sessions by filtering pickle files"""
+        session_files = []
         for session in sessions:
-            session_path = os.path.join(data_path, f"{session}.pickle")
-            if os.path.exists(session_path):
-                all_files.append(session_path)
+            # Find files that start with the session ID
+            matching_files = [f for f in all_pickle_files if os.path.basename(f).startswith(session)]
+            if matching_files:
+                session_files.extend(matching_files)
+                print(f"Found {len(matching_files)} files for session {session}")
             else:
-                print(f"Warning: Session file {session_path} not found")
+                print(f"Warning: No files found for session {session}")
         
-        if not all_files:
+        if not session_files:
             print(f"Warning: No files found for sessions {sessions}")
             return None
             
+        print(f"Using {len(session_files)} files for dataset")
         return ModifiedSessionDataset(
-            data_path=all_files,
+            data_path=session_files,
             max_samples=max_samples,
             chunk_size=100
         )
@@ -427,8 +449,8 @@ def main_worker(rank, world_size, args):
     device = torch.device(f'cuda:{rank}')
     torch.cuda.set_device(device)
     
-    # Define Allen dataset sessions (same as other scripts)
-    allen_sessions = ['719161530', '768515987', '771160300', '798911424', '771990200', '771160300', '768515987']
+    # Define Allen dataset sessions (same as other scripts) - remove duplicates
+    allen_sessions = list(set(['719161530', '768515987', '771160300', '798911424', '771990200']))
     
     # Split sessions into train/val/test (80/20 split, with one session for test)
     if args.test_session is not None:
