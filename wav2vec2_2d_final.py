@@ -17,6 +17,7 @@ from torch.utils.data import Dataset, DataLoader, DistributedSampler
 import numpy as np
 from tqdm import tqdm
 import time
+import random
 
 # Add fairseq to path
 sys.path.insert(0, '/vast/us2193/fairseq')
@@ -194,6 +195,36 @@ def ddp_cleanup():
     """Clean up distributed training"""
     dist.destroy_process_group()
 
+def create_session_datasets(data_path, train_sessions, val_sessions, test_sessions, max_samples_per_split=None):
+    """Create separate datasets for train/val/test based on session splits"""
+    
+    def create_dataset_from_sessions(sessions, max_samples=None):
+        """Create dataset from specific sessions"""
+        all_files = []
+        for session in sessions:
+            session_path = os.path.join(data_path, f"{session}.pickle")
+            if os.path.exists(session_path):
+                all_files.append(session_path)
+            else:
+                print(f"Warning: Session file {session_path} not found")
+        
+        if not all_files:
+            print(f"Warning: No files found for sessions {sessions}")
+            return None
+            
+        return ModifiedSessionDataset(
+            data_path=all_files,
+            max_samples=max_samples,
+            chunk_size=100
+        )
+    
+    # Create datasets for each split
+    train_dataset = create_dataset_from_sessions(train_sessions, max_samples_per_split)
+    val_dataset = create_dataset_from_sessions(val_sessions, max_samples_per_split)
+    test_dataset = create_dataset_from_sessions(test_sessions, max_samples_per_split)
+    
+    return train_dataset, val_dataset, test_dataset
+
 def train_epoch(model, dataloader, optimizer, device, rank):
     """Train one epoch with wav2vec2 model"""
     model.train()
@@ -302,6 +333,89 @@ def train_epoch(model, dataloader, optimizer, device, rank):
         'diversity_loss': total_diversity / max(num_batches, 1)
     }
 
+def validate_epoch(model, dataloader, device, rank):
+    """Validate one epoch with wav2vec2 model"""
+    model.eval()
+    total_loss = 0.0
+    total_contrastive = 0.0
+    total_diversity = 0.0
+    num_batches = 0
+    
+    progress_bar = tqdm(dataloader, desc=f"Rank {rank} Validation", disable=rank != 0)
+    
+    with torch.no_grad():
+        for batch_idx, batch in enumerate(progress_bar):
+            try:
+                # Move to device
+                batch = batch.to(device)
+                
+                # Reshape data for 2D CNN: [batch_size, 1, height, width]
+                batch_size = batch.size(0)
+                if batch.size(1) == 3750:
+                    # Reshape to 2D: [batch_size, 1, 3750, 93]
+                    batch = batch.unsqueeze(1).repeat(1, 1, 1, 93)  # [batch_size, 1, 3750, 93]
+                
+                # Forward pass
+                outputs = model(
+                    source=batch,
+                    mask_indices=None,
+                    features_only=False
+                )
+                
+                # Compute losses
+                try:
+                    if isinstance(outputs, dict) and 'x' in outputs:
+                        raw_logits = outputs['x']
+                        C, B, T = raw_logits.shape
+                        logits_bt_c = raw_logits.permute(1, 2, 0).contiguous().view(-1, C)
+                        targets_bt = torch.zeros(B * T, dtype=torch.long, device=device)
+                        contrastive_loss = nn.CrossEntropyLoss()(logits_bt_c, targets_bt)
+
+                        # Diversity loss
+                        if ('prob_perplexity' in outputs) and ('num_vars' in outputs):
+                            num_vars = outputs['num_vars']
+                            prob_ppl = outputs['prob_perplexity']
+                            diversity_loss = (num_vars - prob_ppl) / max(num_vars, 1)
+                            if isinstance(diversity_loss, torch.Tensor):
+                                diversity_loss = diversity_loss.mean()
+                            else:
+                                diversity_loss = torch.tensor(float(diversity_loss), device=device)
+                        else:
+                            diversity_loss = torch.tensor(0.0, device=device)
+
+                        loss = contrastive_loss + 0.1 * diversity_loss
+                    else:
+                        feat_pen = outputs.get('features_pen', torch.tensor(0.0, device=device)) if isinstance(outputs, dict) else torch.tensor(0.0, device=device)
+                        loss = feat_pen if isinstance(feat_pen, torch.Tensor) else torch.tensor(float(feat_pen), device=device)
+                        contrastive_loss = torch.tensor(0.0, device=device)
+                        diversity_loss = torch.tensor(0.0, device=device)
+                except Exception as e:
+                    print(f"Rank {rank} - Validation loss computation error: {e}")
+                    continue
+                
+                total_loss += loss.item()
+                total_contrastive += contrastive_loss.item()
+                total_diversity += diversity_loss.item()
+                num_batches += 1
+                
+                # Update progress bar
+                if rank == 0:
+                    progress_bar.set_postfix({
+                        "val_loss": f"{loss.item():.4f}",
+                        "val_contrastive": f"{contrastive_loss.item():.4f}",
+                        "val_diversity": f"{diversity_loss.item():.4f}"
+                    })
+                    
+            except Exception as e:
+                print(f"Rank {rank} - Validation batch {batch_idx} error: {e}")
+                continue
+    
+    return {
+        'total_loss': total_loss / max(num_batches, 1),
+        'contrastive_loss': total_contrastive / max(num_batches, 1),
+        'diversity_loss': total_diversity / max(num_batches, 1)
+    }
+
 def main_worker(rank, world_size, args):
     """Main worker function for distributed training"""
     print(f"Starting worker {rank} of {world_size}")
@@ -313,28 +427,76 @@ def main_worker(rank, world_size, args):
     device = torch.device(f'cuda:{rank}')
     torch.cuda.set_device(device)
     
-    # Create dataset
-    dataset = ModifiedSessionDataset(
+    # Define Allen dataset sessions (same as other scripts)
+    allen_sessions = ['719161530', '768515987', '771160300', '798911424', '771990200', '771160300', '768515987']
+    
+    # Split sessions into train/val/test (80/20 split, with one session for test)
+    if args.test_session is not None:
+        test_session = args.test_session
+        session_list = [s for s in allen_sessions if s != test_session]
+    else:
+        # Use last session as test by default
+        test_session = allen_sessions[-1]
+        session_list = allen_sessions[:-1]
+    
+    # Split remaining sessions into train/val (80/20)
+    random.seed(42)
+    train_sessions = random.sample(session_list, int(len(session_list) * 0.8))
+    val_sessions = [s for s in session_list if s not in train_sessions]
+    
+    if rank == 0:
+        print(f"Training sessions: {train_sessions}")
+        print(f"Validation sessions: {val_sessions}")
+        print(f"Test session: {test_session}")
+    
+    # Create datasets for each split
+    train_dataset, val_dataset, test_dataset = create_session_datasets(
         data_path=args.data_path,
-        max_samples=args.max_samples,
-        chunk_size=args.chunk_size
+        train_sessions=train_sessions,
+        val_sessions=val_sessions,
+        test_sessions=[test_session],
+        max_samples_per_split=args.max_samples // 3 if args.max_samples else None
     )
     
-    if len(dataset) == 0:
-        print(f"Rank {rank}: No data loaded, exiting")
+    if train_dataset is None or len(train_dataset) == 0:
+        print(f"Rank {rank}: No training data loaded, exiting")
         ddp_cleanup()
         return
     
-    # Create dataloader with distributed sampler
-    sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank)
-    dataloader = DataLoader(
-        dataset,
+    # Create dataloaders with distributed samplers
+    train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank)
+    train_dataloader = DataLoader(
+        train_dataset,
         batch_size=args.batch_size,
-        sampler=sampler,
+        sampler=train_sampler,
         num_workers=0,
         pin_memory=False,
         drop_last=True
     )
+    
+    val_dataloader = None
+    if val_dataset is not None and len(val_dataset) > 0:
+        val_sampler = DistributedSampler(val_dataset, num_replicas=world_size, rank=rank)
+        val_dataloader = DataLoader(
+            val_dataset,
+            batch_size=args.batch_size,
+            sampler=val_sampler,
+            num_workers=0,
+            pin_memory=False,
+            drop_last=True
+        )
+    
+    test_dataloader = None
+    if test_dataset is not None and len(test_dataset) > 0:
+        test_sampler = DistributedSampler(test_dataset, num_replicas=world_size, rank=rank)
+        test_dataloader = DataLoader(
+            test_dataset,
+            batch_size=args.batch_size,
+            sampler=test_sampler,
+            num_workers=0,
+            pin_memory=False,
+            drop_last=True
+        )
     
     # Create Wav2Vec2 2D model - EXACT SAME CONFIG as single GPU
     config = Wav2Vec2_2DConfig(
@@ -412,23 +574,52 @@ def main_worker(rank, world_size, args):
     # Training loop
     print(f"Rank {rank}: Starting training for {args.num_epochs} epochs")
     
+    best_val_loss = float('inf')
+    
     for epoch in range(args.num_epochs):
         if rank == 0:
             print(f"\nEpoch {epoch + 1}/{args.num_epochs}")
         
-        # Set epoch for sampler
-        sampler.set_epoch(epoch)
+        # Set epoch for samplers
+        train_sampler.set_epoch(epoch)
+        if val_dataloader is not None:
+            val_sampler.set_epoch(epoch)
         
         # Train epoch
-        losses = train_epoch(model, dataloader, optimizer, device, rank)
+        train_losses = train_epoch(model, train_dataloader, optimizer, device, rank)
+        
+        # Validation
+        val_losses = None
+        if val_dataloader is not None:
+            val_losses = validate_epoch(model, val_dataloader, device, rank)
         
         # Synchronize all processes before printing
         dist.barrier()
         
         if rank == 0:
-            print(f"Epoch {epoch + 1} - Total Loss: {losses['total_loss']:.4f}, "
-                  f"Contrastive: {losses['contrastive_loss']:.4f}, "
-                  f"Diversity: {losses['diversity_loss']:.4f}")
+            print(f"Epoch {epoch + 1} - Train Loss: {train_losses['total_loss']:.4f}, "
+                  f"Train Contrastive: {train_losses['contrastive_loss']:.4f}, "
+                  f"Train Diversity: {train_losses['diversity_loss']:.4f}")
+            
+            if val_losses is not None:
+                print(f"Epoch {epoch + 1} - Val Loss: {val_losses['total_loss']:.4f}, "
+                      f"Val Contrastive: {val_losses['contrastive_loss']:.4f}, "
+                      f"Val Diversity: {val_losses['diversity_loss']:.4f}")
+                
+                # Track best validation loss
+                if val_losses['total_loss'] < best_val_loss:
+                    best_val_loss = val_losses['total_loss']
+                    print(f"New best validation loss: {best_val_loss:.4f}")
+    
+    # Final test evaluation
+    if test_dataloader is not None and rank == 0:
+        print("\n" + "="*50)
+        print("FINAL TEST EVALUATION")
+        print("="*50)
+        test_losses = validate_epoch(model, test_dataloader, device, rank)
+        print(f"Test Loss: {test_losses['total_loss']:.4f}, "
+              f"Test Contrastive: {test_losses['contrastive_loss']:.4f}, "
+              f"Test Diversity: {test_losses['diversity_loss']:.4f}")
     
     # Cleanup
     ddp_cleanup()
@@ -461,6 +652,8 @@ def main():
                        help='Number of attention heads')
     parser.add_argument('--world_size', type=int, default=1,
                        help='Number of GPUs to use')
+    parser.add_argument('--test_session', type=str, default=None,
+                       help='Specific session to use for testing (if None, uses last session)')
     
     args = parser.parse_args()
     
