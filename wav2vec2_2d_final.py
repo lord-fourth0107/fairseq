@@ -367,7 +367,11 @@ def train_epoch(model, dataloader, optimizer, device, rank):
                 diversity_loss = torch.tensor(0.0, device=device)
                 loss = torch.tensor(0.1, device=device)
             
-            # Backward pass
+            # Backward pass (skip if loss has no grad path)
+            if not loss.requires_grad:
+                if rank == 0 and (batch_idx % 50 == 0):
+                    print("Skipping backward: loss has no grad path (no grad_fn). Likely missing logits for this batch.")
+                continue
             optimizer.zero_grad()
             loss.backward()
             
