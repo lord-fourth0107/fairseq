@@ -36,10 +36,11 @@ class ModifiedSessionDataset(Dataset):
       - a list of absolute file paths to .pickle files
     """
     
-    def __init__(self, data_path, max_samples=None, chunk_size=100):
+    def __init__(self, data_path, max_samples=None, chunk_size=100, build_probe_matrices=True):
         self.data_path = data_path
         self.max_samples = None if (max_samples is None or (isinstance(max_samples, int) and max_samples <= 0)) else max_samples
         self.chunk_size = chunk_size
+        self.build_probe_matrices = build_probe_matrices
         # Index over files: list of dicts {path, start, count}
         self.file_index = []
         self.total_samples = 0
@@ -73,21 +74,63 @@ class ModifiedSessionDataset(Dataset):
             if not (isinstance(raw_data, list) and len(raw_data) > 0):
                 print(f"  Skipping {fname}: not a non-empty list")
                 continue
-            file_len = len(raw_data)
-            # Respect global max_samples cap at index time
-            if self.max_samples is not None:
-                remaining = self.max_samples - self.total_samples
-                if remaining <= 0:
-                    break
-                file_take = min(file_len, remaining)
+
+            if self.build_probe_matrices:
+                # Group entries by (session, count, probe)
+                groups = {}
+                for idx, item in enumerate(raw_data):
+                    try:
+                        signal, label = item if isinstance(item, (list, tuple)) and len(item) >= 2 else (item, None)
+                        if not isinstance(label, str):
+                            continue
+                        parts = label.split('_')
+                        if len(parts) != 5:
+                            continue
+                        session, count, probe, lfp_channel_index, brain_region = parts
+                        key = (session, count, probe)
+                        if key not in groups:
+                            groups[key] = {}
+                        # keep first occurrence per channel id
+                        if lfp_channel_index not in groups[key]:
+                            groups[key][lfp_channel_index] = idx
+                    except Exception:
+                        continue
+
+                # Respect max_samples across groups
+                group_keys = list(groups.keys())
+                if self.max_samples is not None:
+                    remaining = self.max_samples - self.total_samples
+                    if remaining <= 0:
+                        break
+                    group_keys = group_keys[:remaining]
+
+                for gkey in group_keys:
+                    self.file_index.append({
+                        "path": filepath,
+                        "start": start,
+                        "count": 1,
+                        "group_key": gkey,
+                        "channels_map": groups[gkey],  # maps channel_id(str) -> index in raw_data
+                    })
+                    start += 1
+                    self.total_samples += 1
+                print(f"  Indexed {len(group_keys)} probe-matrices from {fname} (total indexed: {self.total_samples})")
             else:
-                file_take = file_len
-            if file_take <= 0:
-                continue
-            self.file_index.append({"path": filepath, "start": start, "count": file_take})
-            start += file_take
-            self.total_samples += file_take
-            print(f"  Indexed {file_take} from {fname} (total indexed: {self.total_samples})")
+                file_len = len(raw_data)
+                # Respect global max_samples cap at index time
+                if self.max_samples is not None:
+                    remaining = self.max_samples - self.total_samples
+                    if remaining <= 0:
+                        break
+                    file_take = min(file_len, remaining)
+                else:
+                    file_take = file_len
+                if file_take <= 0:
+                    continue
+                self.file_index.append({"path": filepath, "start": start, "count": file_take})
+                start += file_take
+                self.total_samples += file_take
+                print(f"  Indexed {file_take} from {fname} (total indexed: {self.total_samples})")
         print(f"Final indexed samples: {self.total_samples} across {len(self.file_index)} files")
 
     def __len__(self):
@@ -114,13 +157,45 @@ class ModifiedSessionDataset(Dataset):
                 path = entry["path"]
                 # Load file (cached when possible)
                 self._load_file_into_cache(path)
-                sample = self._cache_data[local_idx]
-                # If sample is a tuple, take the first element
-                if isinstance(sample, tuple) and len(sample) > 0:
-                    sample = sample[0]
-                # Convert to tensor
-                tensor = torch.as_tensor(sample, dtype=torch.float32)
-                return tensor
+                if self.build_probe_matrices and "group_key" in entry:
+                    import numpy as np
+                    # Build a 2D matrix for this (session,count,probe)
+                    channels_map = entry["channels_map"]  # dict channel_id(str)->idx in raw_data
+                    channel_ids = sorted(channels_map.keys(), key=lambda x: int(x) if str(x).isdigit() else x)
+                    # Determine time length from first available signal
+                    first_idx = channels_map[channel_ids[0]]
+                    first_item = self._cache_data[first_idx]
+                    first_signal = first_item[0] if isinstance(first_item, (list, tuple)) else first_item
+                    sig = np.asarray(first_signal)
+                    time_len = sig.shape[0] if sig.ndim == 1 else (sig.shape[0] if 0 in sig.shape else sig.size)
+                    T = 3750 if time_len >= 3750 else time_len
+                    # Initialize matrix T x num_channels
+                    mat = np.zeros((T, len(channel_ids)), dtype=np.float32)
+                    for col, ch_id in enumerate(channel_ids):
+                        data_idx = channels_map[ch_id]
+                        item = self._cache_data[data_idx]
+                        signal = item[0] if isinstance(item, (list, tuple)) else item
+                        arr = np.asarray(signal).astype(np.float32)
+                        if arr.ndim == 2:
+                            # choose the axis that matches time best
+                            if arr.shape[0] >= arr.shape[1]:
+                                arr = arr[:, 0]
+                            else:
+                                arr = arr[0, :]
+                        if arr.shape[0] >= T:
+                            mat[:, col] = arr[:T]
+                        else:
+                            mat[:arr.shape[0], col] = arr
+                    # Add singleton channel axis for Conv2D: (1, T, C)
+                    mat = np.expand_dims(mat, axis=0)
+                    return torch.from_numpy(mat)
+                else:
+                    sample = self._cache_data[local_idx]
+                    # If sample is a tuple, take the first element
+                    if isinstance(sample, tuple) and len(sample) > 0:
+                        sample = sample[0]
+                    tensor = torch.as_tensor(sample, dtype=torch.float32)
+                    return tensor
         # Fallback (should not happen)
         raise IndexError(f"Index out of range: {idx}")
 
