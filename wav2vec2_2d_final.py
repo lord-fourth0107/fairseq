@@ -366,9 +366,15 @@ def train_epoch(model, dataloader, optimizer, device, rank):
                     if 'x' in outputs:
                         raw_logits = outputs['x']
                         if isinstance(raw_logits, torch.Tensor) and raw_logits.ndim == 3:
-                            C, B, T = raw_logits.shape
-                            logits_bt_c = raw_logits.permute(1, 2, 0).contiguous().view(-1, C)  # [B*T, C]
-                            targets_bt = torch.zeros(B * T, dtype=torch.long, device=device)
+                            # Prefer (B, T, C) layout; fallback to (C, B, T)
+                            try:
+                                B, T, C = raw_logits.shape
+                                logits_bt_c = raw_logits.contiguous().view(-1, C)  # [B*T, C]
+                                targets_bt = torch.zeros(B * T, dtype=torch.long, device=device)
+                            except Exception:
+                                C, B, T = raw_logits.shape
+                                logits_bt_c = raw_logits.permute(1, 2, 0).contiguous().view(-1, C)
+                                targets_bt = torch.zeros(B * T, dtype=torch.long, device=device)
                             contrastive_loss = nn.CrossEntropyLoss()(logits_bt_c, targets_bt)
                     elif 'contrastive_loss' in outputs:
                         contrastive_loss = outputs['contrastive_loss'] if isinstance(outputs['contrastive_loss'], torch.Tensor) else torch.tensor(float(outputs['contrastive_loss']), device=device)
