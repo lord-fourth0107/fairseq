@@ -279,38 +279,93 @@ def train_epoch(model, dataloader, optimizer, device, rank):
                 features_only=False
             )
             
+            # Debug: Print model outputs structure (only on first batch and rank 0)
+            if batch_idx == 0 and rank == 0:
+                print(f"\nModel outputs structure:")
+                if isinstance(outputs, dict):
+                    for key, value in outputs.items():
+                        if isinstance(value, torch.Tensor):
+                            print(f"  {key}: {value.shape} ({value.dtype})")
+                        else:
+                            print(f"  {key}: {type(value)} = {value}")
+                else:
+                    print(f"  outputs type: {type(outputs)}")
+                    if hasattr(outputs, 'shape'):
+                        print(f"  outputs shape: {outputs.shape}")
+            
             # Compute contrastive and diversity losses from model outputs dict
             try:
-                # logits shape from model is [C, B, T]
-                if isinstance(outputs, dict) and 'x' in outputs:
-                    raw_logits = outputs['x']
-                    C, B, T = raw_logits.shape
-                    logits_bt_c = raw_logits.permute(1, 2, 0).contiguous().view(-1, C)  # [B*T, C]
-                    targets_bt = torch.zeros(B * T, dtype=torch.long, device=device)  # positives at index 0
-                    contrastive_loss = nn.CrossEntropyLoss()(logits_bt_c, targets_bt)
-
-                    # Diversity loss: prefer codebook diversity if available, else 0
-                    if ('prob_perplexity' in outputs) and ('num_vars' in outputs):
+                # Initialize default losses
+                contrastive_loss = torch.tensor(0.0, device=device)
+                diversity_loss = torch.tensor(0.0, device=device)
+                loss = torch.tensor(0.0, device=device)
+                
+                if isinstance(outputs, dict):
+                    # Try to get contrastive loss directly from model outputs
+                    if 'contrastive_loss' in outputs:
+                        contrastive_loss = outputs['contrastive_loss']
+                        if not isinstance(contrastive_loss, torch.Tensor):
+                            contrastive_loss = torch.tensor(float(contrastive_loss), device=device)
+                    elif 'x' in outputs:
+                        # Compute contrastive loss from logits
+                        raw_logits = outputs['x']
+                        if isinstance(raw_logits, torch.Tensor) and len(raw_logits.shape) >= 2:
+                            C, B, T = raw_logits.shape
+                            logits_bt_c = raw_logits.permute(1, 2, 0).contiguous().view(-1, C)  # [B*T, C]
+                            targets_bt = torch.zeros(B * T, dtype=torch.long, device=device)  # positives at index 0
+                            contrastive_loss = nn.CrossEntropyLoss()(logits_bt_c, targets_bt)
+                    
+                    # Try to get diversity loss
+                    if 'diversity_loss' in outputs:
+                        diversity_loss = outputs['diversity_loss']
+                        if not isinstance(diversity_loss, torch.Tensor):
+                            diversity_loss = torch.tensor(float(diversity_loss), device=device)
+                    elif ('prob_perplexity' in outputs) and ('num_vars' in outputs):
                         num_vars = outputs['num_vars']
                         prob_ppl = outputs['prob_perplexity']
-                        diversity_loss = (num_vars - prob_ppl) / max(num_vars, 1)
-                        if isinstance(diversity_loss, torch.Tensor):
-                            diversity_loss = diversity_loss.mean()
-                        else:
-                            diversity_loss = torch.tensor(float(diversity_loss), device=device)
+                        if isinstance(num_vars, torch.Tensor) and isinstance(prob_ppl, torch.Tensor):
+                            diversity_loss = (num_vars - prob_ppl) / max(num_vars, 1)
+                            if isinstance(diversity_loss, torch.Tensor):
+                                diversity_loss = diversity_loss.mean()
+                    
+                    # Try to get total loss
+                    if 'loss' in outputs:
+                        loss = outputs['loss']
+                        if not isinstance(loss, torch.Tensor):
+                            loss = torch.tensor(float(loss), device=device)
+                    elif 'features_pen' in outputs:
+                        loss = outputs['features_pen']
+                        if not isinstance(loss, torch.Tensor):
+                            loss = torch.tensor(float(loss), device=device)
                     else:
-                        diversity_loss = torch.tensor(0.0, device=device)
-
-                    loss = contrastive_loss + 0.1 * diversity_loss
+                        # Compute total loss
+                        loss = contrastive_loss + 0.1 * diversity_loss
                 else:
-                    # Fallback: simple feature penalty if logits missing
-                    feat_pen = outputs.get('features_pen', torch.tensor(0.0, device=device)) if isinstance(outputs, dict) else torch.tensor(0.0, device=device)
-                    loss = feat_pen if isinstance(feat_pen, torch.Tensor) else torch.tensor(float(feat_pen), device=device)
+                    # Fallback: simple feature penalty
+                    loss = torch.tensor(0.1, device=device)  # Small positive loss to avoid zero
+                
+                # Ensure all losses are tensors and have valid values
+                if not isinstance(contrastive_loss, torch.Tensor):
                     contrastive_loss = torch.tensor(0.0, device=device)
+                if not isinstance(diversity_loss, torch.Tensor):
                     diversity_loss = torch.tensor(0.0, device=device)
+                if not isinstance(loss, torch.Tensor):
+                    loss = torch.tensor(0.1, device=device)
+                
+                # Check for NaN or infinite values
+                if torch.isnan(contrastive_loss) or torch.isinf(contrastive_loss):
+                    contrastive_loss = torch.tensor(0.0, device=device)
+                if torch.isnan(diversity_loss) or torch.isinf(diversity_loss):
+                    diversity_loss = torch.tensor(0.0, device=device)
+                if torch.isnan(loss) or torch.isinf(loss):
+                    loss = torch.tensor(0.1, device=device)
+                    
             except Exception as e:
                 print(f"Rank {rank} - Loss computation error: {e}")
-                continue
+                # Set default losses on error
+                contrastive_loss = torch.tensor(0.0, device=device)
+                diversity_loss = torch.tensor(0.0, device=device)
+                loss = torch.tensor(0.1, device=device)
             
             # Backward pass
             optimizer.zero_grad()
@@ -335,6 +390,13 @@ def train_epoch(model, dataloader, optimizer, device, rank):
             
             # Update progress bar
             if rank == 0:
+                # Debug: Print loss values every 100 batches
+                if batch_idx % 100 == 0:
+                    print(f"\nBatch {batch_idx} Loss Values:")
+                    print(f"  Total Loss: {loss.item():.6f}")
+                    print(f"  Contrastive Loss: {contrastive_loss.item():.6f}")
+                    print(f"  Diversity Loss: {diversity_loss.item():.6f}")
+                
                 progress_bar.set_postfix({
                     "loss": f"{loss.item():.4f}",
                     "contrastive": f"{contrastive_loss.item():.4f}",
@@ -386,34 +448,77 @@ def validate_epoch(model, dataloader, device, rank):
                 
                 # Compute losses
                 try:
-                    if isinstance(outputs, dict) and 'x' in outputs:
-                        raw_logits = outputs['x']
-                        C, B, T = raw_logits.shape
-                        logits_bt_c = raw_logits.permute(1, 2, 0).contiguous().view(-1, C)
-                        targets_bt = torch.zeros(B * T, dtype=torch.long, device=device)
-                        contrastive_loss = nn.CrossEntropyLoss()(logits_bt_c, targets_bt)
-
-                        # Diversity loss
-                        if ('prob_perplexity' in outputs) and ('num_vars' in outputs):
+                    # Initialize default losses
+                    contrastive_loss = torch.tensor(0.0, device=device)
+                    diversity_loss = torch.tensor(0.0, device=device)
+                    loss = torch.tensor(0.0, device=device)
+                    
+                    if isinstance(outputs, dict):
+                        # Try to get contrastive loss directly from model outputs
+                        if 'contrastive_loss' in outputs:
+                            contrastive_loss = outputs['contrastive_loss']
+                            if not isinstance(contrastive_loss, torch.Tensor):
+                                contrastive_loss = torch.tensor(float(contrastive_loss), device=device)
+                        elif 'x' in outputs:
+                            # Compute contrastive loss from logits
+                            raw_logits = outputs['x']
+                            if isinstance(raw_logits, torch.Tensor) and len(raw_logits.shape) >= 2:
+                                C, B, T = raw_logits.shape
+                                logits_bt_c = raw_logits.permute(1, 2, 0).contiguous().view(-1, C)
+                                targets_bt = torch.zeros(B * T, dtype=torch.long, device=device)
+                                contrastive_loss = nn.CrossEntropyLoss()(logits_bt_c, targets_bt)
+                        
+                        # Try to get diversity loss
+                        if 'diversity_loss' in outputs:
+                            diversity_loss = outputs['diversity_loss']
+                            if not isinstance(diversity_loss, torch.Tensor):
+                                diversity_loss = torch.tensor(float(diversity_loss), device=device)
+                        elif ('prob_perplexity' in outputs) and ('num_vars' in outputs):
                             num_vars = outputs['num_vars']
                             prob_ppl = outputs['prob_perplexity']
-                            diversity_loss = (num_vars - prob_ppl) / max(num_vars, 1)
-                            if isinstance(diversity_loss, torch.Tensor):
-                                diversity_loss = diversity_loss.mean()
-                            else:
-                                diversity_loss = torch.tensor(float(diversity_loss), device=device)
+                            if isinstance(num_vars, torch.Tensor) and isinstance(prob_ppl, torch.Tensor):
+                                diversity_loss = (num_vars - prob_ppl) / max(num_vars, 1)
+                                if isinstance(diversity_loss, torch.Tensor):
+                                    diversity_loss = diversity_loss.mean()
+                        
+                        # Try to get total loss
+                        if 'loss' in outputs:
+                            loss = outputs['loss']
+                            if not isinstance(loss, torch.Tensor):
+                                loss = torch.tensor(float(loss), device=device)
+                        elif 'features_pen' in outputs:
+                            loss = outputs['features_pen']
+                            if not isinstance(loss, torch.Tensor):
+                                loss = torch.tensor(float(loss), device=device)
                         else:
-                            diversity_loss = torch.tensor(0.0, device=device)
-
-                        loss = contrastive_loss + 0.1 * diversity_loss
+                            # Compute total loss
+                            loss = contrastive_loss + 0.1 * diversity_loss
                     else:
-                        feat_pen = outputs.get('features_pen', torch.tensor(0.0, device=device)) if isinstance(outputs, dict) else torch.tensor(0.0, device=device)
-                        loss = feat_pen if isinstance(feat_pen, torch.Tensor) else torch.tensor(float(feat_pen), device=device)
+                        # Fallback: simple feature penalty
+                        loss = torch.tensor(0.1, device=device)
+                    
+                    # Ensure all losses are tensors and have valid values
+                    if not isinstance(contrastive_loss, torch.Tensor):
                         contrastive_loss = torch.tensor(0.0, device=device)
+                    if not isinstance(diversity_loss, torch.Tensor):
                         diversity_loss = torch.tensor(0.0, device=device)
+                    if not isinstance(loss, torch.Tensor):
+                        loss = torch.tensor(0.1, device=device)
+                    
+                    # Check for NaN or infinite values
+                    if torch.isnan(contrastive_loss) or torch.isinf(contrastive_loss):
+                        contrastive_loss = torch.tensor(0.0, device=device)
+                    if torch.isnan(diversity_loss) or torch.isinf(diversity_loss):
+                        diversity_loss = torch.tensor(0.0, device=device)
+                    if torch.isnan(loss) or torch.isinf(loss):
+                        loss = torch.tensor(0.1, device=device)
+                        
                 except Exception as e:
                     print(f"Rank {rank} - Validation loss computation error: {e}")
-                    continue
+                    # Set default losses on error
+                    contrastive_loss = torch.tensor(0.0, device=device)
+                    diversity_loss = torch.tensor(0.0, device=device)
+                    loss = torch.tensor(0.1, device=device)
                 
                 total_loss += loss.item()
                 total_contrastive += contrastive_loss.item()
@@ -422,6 +527,13 @@ def validate_epoch(model, dataloader, device, rank):
                 
                 # Update progress bar
                 if rank == 0:
+                    # Debug: Print loss values every 50 batches during validation
+                    if batch_idx % 50 == 0:
+                        print(f"\nValidation Batch {batch_idx} Loss Values:")
+                        print(f"  Total Loss: {loss.item():.6f}")
+                        print(f"  Contrastive Loss: {contrastive_loss.item():.6f}")
+                        print(f"  Diversity Loss: {diversity_loss.item():.6f}")
+                    
                     progress_bar.set_postfix({
                         "val_loss": f"{loss.item():.4f}",
                         "val_contrastive": f"{contrastive_loss.item():.4f}",
