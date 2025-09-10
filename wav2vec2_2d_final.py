@@ -36,11 +36,12 @@ class ModifiedSessionDataset(Dataset):
       - a list of absolute file paths to .pickle files
     """
     
-    def __init__(self, data_path, max_samples=None, chunk_size=100, build_probe_matrices=True):
+    def __init__(self, data_path, max_samples=None, chunk_size=100, build_probe_matrices=True, max_channels=93):
         self.data_path = data_path
         self.max_samples = None if (max_samples is None or (isinstance(max_samples, int) and max_samples <= 0)) else max_samples
         self.chunk_size = chunk_size
         self.build_probe_matrices = build_probe_matrices
+        self.max_channels = max_channels
         # Index over files: list of dicts {path, start, count}
         self.file_index = []
         self.total_samples = 0
@@ -162,6 +163,9 @@ class ModifiedSessionDataset(Dataset):
                     # Build a 2D matrix for this (session,count,probe)
                     channels_map = entry["channels_map"]  # dict channel_id(str)->idx in raw_data
                     channel_ids = sorted(channels_map.keys(), key=lambda x: int(x) if str(x).isdigit() else x)
+                    # Cap channels to control memory (match model expectation)
+                    if self.max_channels is not None and len(channel_ids) > self.max_channels:
+                        channel_ids = channel_ids[: self.max_channels]
                     # Determine time length from first available signal
                     first_idx = channels_map[channel_ids[0]]
                     first_item = self._cache_data[first_idx]
@@ -778,8 +782,10 @@ def main_worker(rank, world_size, args):
     
     # Create Wav2Vec2 2D model - EXACT SAME CONFIG as single GPU
     config = Wav2Vec2_2DConfig(
-        # 2D CNN feature extraction layers - FIXED to prevent zero output
-        conv_2d_feature_layers="[(64, 10, 1), (128, 10, 1), (256, 10, 1), (512, 10, 1)]",
+        # 2D CNN feature extraction layers: reduce time and channels (width) early, then focus on time
+        # Format: (out_channels, (kh, kw), (sh, sw))
+        # 93 -> ~47 -> ~23 along channel axis; 3750 reduces each layer along time
+        conv_2d_feature_layers="[(64, (3, 3), (2, 2)), (128, (3, 3), (2, 2)), (256, (3, 3), (2, 1)), (512, (3, 3), (2, 1))]",
         
         # Input dimensions
         input_channels=1,

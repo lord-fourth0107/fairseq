@@ -744,8 +744,17 @@ class Wav2Vec2_2DModel(BaseFairseqModel):
         feature_enc_layers = eval(cfg.conv_2d_feature_layers)
         
         for _, kernel_size, stride in feature_enc_layers:
-            h = (h - kernel_size) // stride + 1
-            w = (w - kernel_size) // stride + 1
+            # Support tuple kernel/stride (kh, kw), default to ints if provided
+            if isinstance(kernel_size, (list, tuple)):
+                kh, kw = int(kernel_size[0]), int(kernel_size[1])
+            else:
+                kh = kw = int(kernel_size)
+            if isinstance(stride, (list, tuple)):
+                sh, sw = int(stride[0]), int(stride[1])
+            else:
+                sh = sw = int(stride)
+            h = (h - kh) // sh + 1
+            w = (w - kw) // sw + 1
         
         self.output_height = h
         self.output_width = w
