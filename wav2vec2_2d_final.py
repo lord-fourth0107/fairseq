@@ -561,8 +561,13 @@ def main_worker(rank, world_size, args):
     device = torch.device(f'cuda:{rank}')
     torch.cuda.set_device(device)
     
-    # Define Allen dataset sessions (same as other scripts) - remove duplicates
-    allen_sessions = list(set(['719161530', '768515987', '771160300', '798911424', '771990200']))
+    # Define Allen dataset sessions (fixed sets used in other scripts)
+    allen5 = ['719161530', '768515987', '771160300', '798911424', '771990200']
+    allen7 = ['719161530', '794812542', '778998620', '798911424', '771160300', '768515987', '771990200']
+    if args.session_set == 'allen7':
+        allen_sessions = allen7
+    else:
+        allen_sessions = allen5
     
     # Split sessions into train/val/test (80/20 split, with one session for test)
     if args.test_session is not None:
@@ -788,6 +793,8 @@ def main():
                        help='Number of GPUs to use')
     parser.add_argument('--test_session', type=str, default=None,
                        help='Specific session to use for testing (if None, uses last session)')
+    parser.add_argument('--session_set', type=str, default='allen5', choices=['allen5', 'allen7'],
+                       help='Which fixed Allen session ID set to use')
     
     args = parser.parse_args()
     
