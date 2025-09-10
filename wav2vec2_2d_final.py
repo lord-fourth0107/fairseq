@@ -195,6 +195,67 @@ def ddp_cleanup():
     """Clean up distributed training"""
     dist.destroy_process_group()
 
+def _shape(x):
+    try:
+        return tuple(x.shape)
+    except Exception:
+        return type(x).__name__
+
+def setup_shape_trace_once(model: nn.Module):
+    """Register forward hooks to print input/output shapes for one forward pass, then remove."""
+    printed = {"done": False}
+    handles = []
+
+    def hook_factory(tag):
+        def hook(module, inputs, output):
+            if printed["done"]:
+                return
+            in_shapes = []
+            for i in inputs:
+                if isinstance(i, (list, tuple)):
+                    in_shapes.append([_shape(t) for t in i])
+                else:
+                    in_shapes.append(_shape(i))
+            out_shape = _shape(output)
+            print(f"TRACE {tag}: in={in_shapes} out={out_shape}")
+        return hook
+
+    # High-level components
+    if hasattr(model, 'module'):
+        net = model.module
+    else:
+        net = model
+
+    # Feature extractor
+    if hasattr(net, 'feature_extractor'):
+        handles.append(net.feature_extractor.register_forward_hook(hook_factory('feature_extractor')))
+    # Layer norm before projection (may be LayerNorm on sequences)
+    if hasattr(net, 'layer_norm'):
+        handles.append(net.layer_norm.register_forward_hook(hook_factory('layer_norm')))
+    # Post extract projection
+    if hasattr(net, 'post_extract_proj') and net.post_extract_proj is not None:
+        handles.append(net.post_extract_proj.register_forward_hook(hook_factory('post_extract_proj')))
+    # Temporal conv1d stack
+    if hasattr(net, 'temporal_conv1d') and net.temporal_conv1d is not None:
+        handles.append(net.temporal_conv1d.register_forward_hook(hook_factory('temporal_conv1d')))
+    # Encoder
+    if hasattr(net, 'encoder'):
+        handles.append(net.encoder.register_forward_hook(hook_factory('encoder')))
+    # Final projection
+    if hasattr(net, 'final_proj'):
+        handles.append(net.final_proj.register_forward_hook(hook_factory('final_proj')))
+
+    # Top-level wrapper to remove hooks after one successful forward
+    def top_hook(module, inputs, output):
+        if not printed["done"]:
+            print(f"TRACE model.forward: in={_shape(inputs[0])} out={_shape(output.get('x') if isinstance(output, dict) else output)}")
+            for h in handles:
+                h.remove()
+            printed["done"] = True
+
+    handles.append(net.register_forward_hook(top_hook))
+    return handles
+
 def create_session_datasets(data_path, train_sessions, val_sessions, test_sessions, max_samples_per_split=None):
     """Create separate datasets for train/val/test based on session splits"""
     
@@ -301,45 +362,38 @@ def train_epoch(model, dataloader, optimizer, device, rank):
                 loss = torch.tensor(0.0, device=device)
                 
                 if isinstance(outputs, dict):
-                    # Try to get contrastive loss directly from model outputs
-                    if 'contrastive_loss' in outputs:
-                        contrastive_loss = outputs['contrastive_loss']
-                        if not isinstance(contrastive_loss, torch.Tensor):
-                            contrastive_loss = torch.tensor(float(contrastive_loss), device=device)
-                    elif 'x' in outputs:
-                        # Compute contrastive loss from logits
+                    # Prefer computing contrastive loss from logits when available
+                    if 'x' in outputs:
                         raw_logits = outputs['x']
-                        if isinstance(raw_logits, torch.Tensor) and len(raw_logits.shape) >= 2:
+                        if isinstance(raw_logits, torch.Tensor) and raw_logits.ndim == 3:
                             C, B, T = raw_logits.shape
                             logits_bt_c = raw_logits.permute(1, 2, 0).contiguous().view(-1, C)  # [B*T, C]
-                            targets_bt = torch.zeros(B * T, dtype=torch.long, device=device)  # positives at index 0
+                            targets_bt = torch.zeros(B * T, dtype=torch.long, device=device)
                             contrastive_loss = nn.CrossEntropyLoss()(logits_bt_c, targets_bt)
-                    
-                    # Try to get diversity loss
+                    elif 'contrastive_loss' in outputs:
+                        contrastive_loss = outputs['contrastive_loss'] if isinstance(outputs['contrastive_loss'], torch.Tensor) else torch.tensor(float(outputs['contrastive_loss']), device=device)
+
+                    # Diversity component
                     if 'diversity_loss' in outputs:
-                        diversity_loss = outputs['diversity_loss']
-                        if not isinstance(diversity_loss, torch.Tensor):
-                            diversity_loss = torch.tensor(float(diversity_loss), device=device)
+                        diversity_loss = outputs['diversity_loss'] if isinstance(outputs['diversity_loss'], torch.Tensor) else torch.tensor(float(outputs['diversity_loss']), device=device)
                     elif ('prob_perplexity' in outputs) and ('num_vars' in outputs):
                         num_vars = outputs['num_vars']
                         prob_ppl = outputs['prob_perplexity']
                         if isinstance(num_vars, torch.Tensor) and isinstance(prob_ppl, torch.Tensor):
-                            diversity_loss = (num_vars - prob_ppl) / max(num_vars, 1)
-                            if isinstance(diversity_loss, torch.Tensor):
-                                diversity_loss = diversity_loss.mean()
-                    
-                    # Try to get total loss
-                    if 'loss' in outputs:
-                        loss = outputs['loss']
-                        if not isinstance(loss, torch.Tensor):
-                            loss = torch.tensor(float(loss), device=device)
-                    elif 'features_pen' in outputs:
-                        loss = outputs['features_pen']
-                        if not isinstance(loss, torch.Tensor):
-                            loss = torch.tensor(float(loss), device=device)
-                    else:
-                        # Compute total loss
+                            diversity_loss = (num_vars - prob_ppl) / torch.clamp(num_vars, min=1)
+                            diversity_loss = diversity_loss.mean()
+
+                    # Always construct training loss from contrastive + diversity when logits were present
+                    if 'x' in outputs:
                         loss = contrastive_loss + 0.1 * diversity_loss
+                    else:
+                        # Fallback only if logits missing
+                        if 'loss' in outputs and isinstance(outputs['loss'], torch.Tensor):
+                            loss = outputs['loss']
+                        elif 'features_pen' in outputs and isinstance(outputs['features_pen'], torch.Tensor):
+                            loss = outputs['features_pen']
+                        else:
+                            loss = contrastive_loss + 0.1 * diversity_loss
                 else:
                     # Fallback: simple feature penalty
                     loss = torch.tensor(0.1, device=device)  # Small positive loss to avoid zero
@@ -702,6 +756,10 @@ def main_worker(rank, world_size, args):
     )
     
     model = Wav2Vec2_2DModel(config).to(device)
+
+    # Enable one-pass shape tracing on rank 0, first batch
+    if rank == 0:
+        setup_shape_trace_once(model)
     
     # Wrap with DDP - FIXED to prevent hanging
     model = DDP(
