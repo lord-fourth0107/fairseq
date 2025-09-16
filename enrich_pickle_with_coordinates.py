@@ -186,13 +186,79 @@ def enrich_pickle_file(pickle_path, coord_lookup):
     
     return stats
 
+def _looks_like_number(s: str) -> bool:
+    try:
+        float(s)
+        return True
+    except Exception:
+        return False
+
+
+def is_label_enriched(label: str) -> bool:
+    """Heuristically determine if a label already has appended coordinates.
+    Expected enriched label suffix: _{ap}_{dv}_{lr}_{probe_h}_{probe_v}
+    We check that the label has at least 9 underscore-separated parts and the
+    last 5 parts are numeric-like.
+    """
+    if not isinstance(label, str):
+        return False
+    parts = label.split('_')
+    if len(parts) < 9:
+        return False
+    tail = parts[-5:]
+    return all(_looks_like_number(x) for x in tail)
+
+
+def should_skip_pickle(pickle_path: str, sample_size: int = 50, threshold: float = 0.9) -> bool:
+    """Load a sample of entries and decide if the pickle is already enriched.
+    - sample_size: number of entries to sample from the start (or all if fewer)
+    - threshold: fraction of sampled labels that must be enriched to skip
+    """
+    try:
+        with open(pickle_path, 'rb') as f:
+            data = pickle.load(f)
+        if not isinstance(data, (list, tuple)) or len(data) == 0:
+            return False
+        n = min(len(data), sample_size)
+        enriched_flags = 0
+        checked = 0
+        for i in range(n):
+            entry = data[i]
+            if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                label = entry[1]
+                checked += 1
+                if is_label_enriched(label):
+                    enriched_flags += 1
+        if checked == 0:
+            return False
+        frac = enriched_flags / checked
+        return frac >= threshold
+    except Exception:
+        return False
+
 def process_single_pickle_file(args):
     """Worker function to process a single pickle file."""
     pickle_path, coord_lookup = args
     
     try:
-        print(f"Processing: {os.path.basename(pickle_path)}")
+        # Fast skip if already enriched
+        if should_skip_pickle(pickle_path):
+            return {
+                'file': pickle_path,
+                'success': True,
+                'stats': {
+                    'total': 0,
+                    'enriched': 0,
+                    'not_found': 0,
+                    'parse_error': 0,
+                    'skipped': True,
+                },
+                'error': None
+            }
+        
+        # Proceed to enrich
         stats = enrich_pickle_file(pickle_path, coord_lookup)
+        stats['skipped'] = False
         return {
             'file': pickle_path,
             'success': True,
@@ -256,6 +322,7 @@ def process_pickle_files(input_path, coord_lookup, num_workers=None):
     overall_stats = {
         'files_processed': 0,
         'files_failed': 0,
+        'files_skipped': 0,
         'total_entries': 0,
         'total_enriched': 0,
         'total_not_found': 0,
@@ -267,19 +334,18 @@ def process_pickle_files(input_path, coord_lookup, num_workers=None):
         # Single file or single worker - process sequentially
         print("Processing files sequentially...")
         for i, pickle_path in enumerate(tqdm(pickle_files, desc="Sequential", unit="file"), 1):
-            # print progress details occasionally
-            # print(f"\n[{i}/{len(pickle_files)}] Processing: {os.path.basename(pickle_path)}")
-            # print("-" * 40)
-            
             result = process_single_pickle_file((pickle_path, coord_lookup))
             
             if result['success']:
                 stats = result['stats']
-                overall_stats['files_processed'] += 1
-                overall_stats['total_entries'] += stats['total']
-                overall_stats['total_enriched'] += stats['enriched']
-                overall_stats['total_not_found'] += stats['not_found']
-                overall_stats['total_parse_errors'] += stats['parse_error']
+                if stats.get('skipped'):
+                    overall_stats['files_skipped'] += 1
+                else:
+                    overall_stats['files_processed'] += 1
+                    overall_stats['total_entries'] += stats['total']
+                    overall_stats['total_enriched'] += stats['enriched']
+                    overall_stats['total_not_found'] += stats['not_found']
+                    overall_stats['total_parse_errors'] += stats['parse_error']
             else:
                 print(f"Error processing {pickle_path}: {result['error']}")
                 overall_stats['files_failed'] += 1
@@ -294,11 +360,14 @@ def process_pickle_files(input_path, coord_lookup, num_workers=None):
                     pbar.update(1)
                     if result['success']:
                         stats = result['stats']
-                        overall_stats['files_processed'] += 1
-                        overall_stats['total_entries'] += stats['total']
-                        overall_stats['total_enriched'] += stats['enriched']
-                        overall_stats['total_not_found'] += stats['not_found']
-                        overall_stats['total_parse_errors'] += stats['parse_error']
+                        if stats.get('skipped'):
+                            overall_stats['files_skipped'] += 1
+                        else:
+                            overall_stats['files_processed'] += 1
+                            overall_stats['total_entries'] += stats['total']
+                            overall_stats['total_enriched'] += stats['enriched']
+                            overall_stats['total_not_found'] += stats['not_found']
+                            overall_stats['total_parse_errors'] += stats['parse_error']
                     else:
                         overall_stats['files_failed'] += 1
     
@@ -307,6 +376,7 @@ def process_pickle_files(input_path, coord_lookup, num_workers=None):
     print("OVERALL PROCESSING SUMMARY")
     print("=" * 60)
     print(f"Files processed successfully: {overall_stats['files_processed']}")
+    print(f"Files skipped (already enriched): {overall_stats['files_skipped']}")
     print(f"Files failed: {overall_stats['files_failed']}")
     print(f"Total entries processed: {overall_stats['total_entries']}")
     print(f"Total entries enriched: {overall_stats['total_enriched']}")
