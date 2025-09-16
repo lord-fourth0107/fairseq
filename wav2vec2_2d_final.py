@@ -479,6 +479,27 @@ def train_epoch(model, dataloader, optimizer, device, rank):
                             loss = outputs['features_pen']
                         else:
                             loss = contrastive_loss + 0.1 * diversity_loss
+                elif isinstance(outputs, tuple):
+                    # Handle tuple output - assume first element is logits
+                    if len(outputs) > 0 and isinstance(outputs[0], torch.Tensor):
+                        raw_logits = outputs[0]
+                        if len(raw_logits.shape) >= 2:
+                            try:
+                                # Try (B, T, C) format first
+                                B, T, C = raw_logits.shape
+                                logits_bt_c = raw_logits.contiguous().view(-1, C)  # [B*T, C]
+                                targets_bt = torch.zeros(B * T, dtype=torch.long, device=device)
+                            except Exception:
+                                # Fallback to (C, B, T) format
+                                C, B, T = raw_logits.shape
+                                logits_bt_c = raw_logits.permute(1, 2, 0).contiguous().view(-1, C)
+                                targets_bt = torch.zeros(B * T, dtype=torch.long, device=device)
+                            contrastive_loss = nn.CrossEntropyLoss()(logits_bt_c, targets_bt)
+                            loss = contrastive_loss + 0.1 * diversity_loss
+                        else:
+                            loss = torch.tensor(0.1, device=device)
+                    else:
+                        loss = torch.tensor(0.1, device=device)
                 else:
                     # Fallback: simple feature penalty
                     loss = torch.tensor(0.1, device=device)  # Small positive loss to avoid zero
@@ -589,6 +610,27 @@ def validate_epoch(model, dataloader, device, rank):
                     features_only=False
                 )
                 
+                # Debug: Print output structure for first few batches
+                if batch_idx < 3 and rank == 0:
+                    print(f"\nValidation Batch {batch_idx} - Model output structure:")
+                    print(f"  Type: {type(outputs)}")
+                    if isinstance(outputs, dict):
+                        print(f"  Keys: {list(outputs.keys())}")
+                        for key, value in outputs.items():
+                            if isinstance(value, torch.Tensor):
+                                print(f"    {key}: {value.shape} ({value.dtype})")
+                            else:
+                                print(f"    {key}: {type(value)} = {value}")
+                    elif isinstance(outputs, tuple):
+                        print(f"  Tuple length: {len(outputs)}")
+                        for i, item in enumerate(outputs):
+                            if isinstance(item, torch.Tensor):
+                                print(f"    [{i}]: {item.shape} ({item.dtype})")
+                            else:
+                                print(f"    [{i}]: {type(item)} = {item}")
+                    else:
+                        print(f"  Value: {outputs}")
+                
                 # Compute losses
                 try:
                     # Initialize default losses
@@ -606,9 +648,16 @@ def validate_epoch(model, dataloader, device, rank):
                             # Compute contrastive loss from logits
                             raw_logits = outputs['x']
                             if isinstance(raw_logits, torch.Tensor) and len(raw_logits.shape) >= 2:
-                                C, B, T = raw_logits.shape
-                                logits_bt_c = raw_logits.permute(1, 2, 0).contiguous().view(-1, C)
-                                targets_bt = torch.zeros(B * T, dtype=torch.long, device=device)
+                                try:
+                                    # Try (B, T, C) format first
+                                    B, T, C = raw_logits.shape
+                                    logits_bt_c = raw_logits.contiguous().view(-1, C)  # [B*T, C]
+                                    targets_bt = torch.zeros(B * T, dtype=torch.long, device=device)
+                                except Exception:
+                                    # Fallback to (C, B, T) format
+                                    C, B, T = raw_logits.shape
+                                    logits_bt_c = raw_logits.permute(1, 2, 0).contiguous().view(-1, C)
+                                    targets_bt = torch.zeros(B * T, dtype=torch.long, device=device)
                                 contrastive_loss = nn.CrossEntropyLoss()(logits_bt_c, targets_bt)
                         
                         # Try to get diversity loss
@@ -636,6 +685,27 @@ def validate_epoch(model, dataloader, device, rank):
                         else:
                             # Compute total loss
                             loss = contrastive_loss + 0.1 * diversity_loss
+                    elif isinstance(outputs, tuple):
+                        # Handle tuple output - assume first element is logits
+                        if len(outputs) > 0 and isinstance(outputs[0], torch.Tensor):
+                            raw_logits = outputs[0]
+                            if len(raw_logits.shape) >= 2:
+                                try:
+                                    # Try (B, T, C) format first
+                                    B, T, C = raw_logits.shape
+                                    logits_bt_c = raw_logits.contiguous().view(-1, C)  # [B*T, C]
+                                    targets_bt = torch.zeros(B * T, dtype=torch.long, device=device)
+                                except Exception:
+                                    # Fallback to (C, B, T) format
+                                    C, B, T = raw_logits.shape
+                                    logits_bt_c = raw_logits.permute(1, 2, 0).contiguous().view(-1, C)
+                                    targets_bt = torch.zeros(B * T, dtype=torch.long, device=device)
+                                contrastive_loss = nn.CrossEntropyLoss()(logits_bt_c, targets_bt)
+                                loss = contrastive_loss + 0.1 * diversity_loss
+                            else:
+                                loss = torch.tensor(0.1, device=device)
+                        else:
+                            loss = torch.tensor(0.1, device=device)
                     else:
                         # Fallback: simple feature penalty
                         loss = torch.tensor(0.1, device=device)
@@ -672,7 +742,7 @@ def validate_epoch(model, dataloader, device, rank):
                 if rank == 0:
                     # Debug: Print loss values every 50 batches during validation
                     if batch_idx % 50 == 0:
-                        print(f"\nValidation Batch {batch_idx} Loss Values:")
+                        print(f" Validation Batch {batch_idx} Loss Values:")
                         print(f"  Total Loss: {loss.item():.6f}")
                         print(f"  Contrastive Loss: {contrastive_loss.item():.6f}")
                         print(f"  Diversity Loss: {diversity_loss.item():.6f}")
