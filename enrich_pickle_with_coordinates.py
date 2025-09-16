@@ -14,6 +14,7 @@ import glob
 import multiprocessing as mp
 from collections import defaultdict
 from functools import partial
+from tqdm import tqdm
 
 def load_coordinate_data(input_path):
     """Load and merge coordinate data from both CSV files."""
@@ -242,7 +243,9 @@ def process_pickle_files(input_path, coord_lookup, num_workers=None):
     if num_workers is None:
         num_workers = min(mp.cpu_count(), len(pickle_files))
     
+    total_cores = mp.cpu_count()
     print(f"Found {len(pickle_files)} pickle file(s) to process")
+    print(f"System CPU cores available: {total_cores}")
     print(f"Using {num_workers} worker process(es)")
     print("=" * 60)
     
@@ -263,9 +266,10 @@ def process_pickle_files(input_path, coord_lookup, num_workers=None):
     if len(pickle_files) == 1 or num_workers == 1:
         # Single file or single worker - process sequentially
         print("Processing files sequentially...")
-        for i, pickle_path in enumerate(pickle_files, 1):
-            print(f"\n[{i}/{len(pickle_files)}] Processing: {os.path.basename(pickle_path)}")
-            print("-" * 40)
+        for i, pickle_path in enumerate(tqdm(pickle_files, desc="Sequential", unit="file"), 1):
+            # print progress details occasionally
+            # print(f"\n[{i}/{len(pickle_files)}] Processing: {os.path.basename(pickle_path)}")
+            # print("-" * 40)
             
             result = process_single_pickle_file((pickle_path, coord_lookup))
             
@@ -284,23 +288,19 @@ def process_pickle_files(input_path, coord_lookup, num_workers=None):
         print("Processing files in parallel...")
         
         with mp.Pool(processes=num_workers) as pool:
-            # Use imap for better progress tracking
             results = pool.imap(process_single_pickle_file, worker_args)
-            
-            for i, result in enumerate(results, 1):
-                print(f"\n[{i}/{len(pickle_files)}] Completed: {os.path.basename(result['file'])}")
-                
-                if result['success']:
-                    stats = result['stats']
-                    overall_stats['files_processed'] += 1
-                    overall_stats['total_entries'] += stats['total']
-                    overall_stats['total_enriched'] += stats['enriched']
-                    overall_stats['total_not_found'] += stats['not_found']
-                    overall_stats['total_parse_errors'] += stats['parse_error']
-                    print(f"  Successfully enriched {stats['enriched']}/{stats['total']} entries")
-                else:
-                    print(f"  Error: {result['error']}")
-                    overall_stats['files_failed'] += 1
+            with tqdm(total=len(pickle_files), desc=f"Parallel x{num_workers}", unit="file") as pbar:
+                for result in results:
+                    pbar.update(1)
+                    if result['success']:
+                        stats = result['stats']
+                        overall_stats['files_processed'] += 1
+                        overall_stats['total_entries'] += stats['total']
+                        overall_stats['total_enriched'] += stats['enriched']
+                        overall_stats['total_not_found'] += stats['not_found']
+                        overall_stats['total_parse_errors'] += stats['parse_error']
+                    else:
+                        overall_stats['files_failed'] += 1
     
     # Print overall summary
     print("\n" + "=" * 60)
