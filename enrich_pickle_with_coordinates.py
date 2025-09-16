@@ -52,13 +52,16 @@ def load_coordinate_data(input_path):
     print(f"Loaded joined.csv: {joined_df.shape}")
     print(f"Loaded channels.csv: {channels_df.shape}")
     
-    # Merge the dataframes on probe_id
+    # Rename columns to avoid conflicts before merging
+    joined_renamed = joined_df[['session_id', 'probe_id']].copy()
+    channels_renamed = channels_df[['ecephys_probe_id', 'local_index', 'probe_horizontal_position', 
+                                   'probe_vertical_position', 'anterior_posterior_ccf_coordinate', 
+                                   'dorsal_ventral_ccf_coordinate', 'left_right_ccf_coordinate']].copy()
+    
+    # Merge on probe_id to get session info
     merged_df = pd.merge(
-        joined_df[['session_id', 'probe_id', 'anterior_posterior_ccf_coordinate', 
-                  'dorsal_ventral_ccf_coordinate', 'left_right_ccf_coordinate']],
-        channels_df[['ecephys_probe_id', 'local_index', 'probe_horizontal_position', 
-                    'probe_vertical_position', 'anterior_posterior_ccf_coordinate', 
-                    'dorsal_ventral_ccf_coordinate', 'left_right_ccf_coordinate']],
+        joined_renamed,
+        channels_renamed,
         left_on='probe_id', 
         right_on='ecephys_probe_id', 
         how='inner'
@@ -71,9 +74,9 @@ def load_coordinate_data(input_path):
     for _, row in merged_df.iterrows():
         key = (row['session_id'], row['probe_id'], str(row['local_index']))
         coord_lookup[key] = {
-            'ap': row['anterior_posterior_ccf_coordinate_x'],
-            'dv': row['dorsal_ventral_ccf_coordinate_x'],
-            'lr': row['left_right_ccf_coordinate_x'],
+            'ap': row['anterior_posterior_ccf_coordinate'],
+            'dv': row['dorsal_ventral_ccf_coordinate'],
+            'lr': row['left_right_ccf_coordinate'],
             'probe_h': row['probe_horizontal_position'],
             'probe_v': row['probe_vertical_position']
         }
@@ -241,22 +244,7 @@ def process_single_pickle_file(args):
     pickle_path, coord_lookup = args
     
     try:
-        # Fast skip if already enriched
-        if should_skip_pickle(pickle_path):
-            return {
-                'file': pickle_path,
-                'success': True,
-                'stats': {
-                    'total': 0,
-                    'enriched': 0,
-                    'not_found': 0,
-                    'parse_error': 0,
-                    'skipped': True,
-                },
-                'error': None
-            }
-        
-        # Proceed to enrich
+        # Process all files without checking if already enriched
         stats = enrich_pickle_file(pickle_path, coord_lookup)
         stats['skipped'] = False
         return {
@@ -322,7 +310,6 @@ def process_pickle_files(input_path, coord_lookup, num_workers=None):
     overall_stats = {
         'files_processed': 0,
         'files_failed': 0,
-        'files_skipped': 0,
         'total_entries': 0,
         'total_enriched': 0,
         'total_not_found': 0,
@@ -338,14 +325,11 @@ def process_pickle_files(input_path, coord_lookup, num_workers=None):
             
             if result['success']:
                 stats = result['stats']
-                if stats.get('skipped'):
-                    overall_stats['files_skipped'] += 1
-                else:
-                    overall_stats['files_processed'] += 1
-                    overall_stats['total_entries'] += stats['total']
-                    overall_stats['total_enriched'] += stats['enriched']
-                    overall_stats['total_not_found'] += stats['not_found']
-                    overall_stats['total_parse_errors'] += stats['parse_error']
+                overall_stats['files_processed'] += 1
+                overall_stats['total_entries'] += stats['total']
+                overall_stats['total_enriched'] += stats['enriched']
+                overall_stats['total_not_found'] += stats['not_found']
+                overall_stats['total_parse_errors'] += stats['parse_error']
             else:
                 print(f"Error processing {pickle_path}: {result['error']}")
                 overall_stats['files_failed'] += 1
@@ -360,14 +344,11 @@ def process_pickle_files(input_path, coord_lookup, num_workers=None):
                     pbar.update(1)
                     if result['success']:
                         stats = result['stats']
-                        if stats.get('skipped'):
-                            overall_stats['files_skipped'] += 1
-                        else:
-                            overall_stats['files_processed'] += 1
-                            overall_stats['total_entries'] += stats['total']
-                            overall_stats['total_enriched'] += stats['enriched']
-                            overall_stats['total_not_found'] += stats['not_found']
-                            overall_stats['total_parse_errors'] += stats['parse_error']
+                        overall_stats['files_processed'] += 1
+                        overall_stats['total_entries'] += stats['total']
+                        overall_stats['total_enriched'] += stats['enriched']
+                        overall_stats['total_not_found'] += stats['not_found']
+                        overall_stats['total_parse_errors'] += stats['parse_error']
                     else:
                         overall_stats['files_failed'] += 1
     
@@ -376,7 +357,6 @@ def process_pickle_files(input_path, coord_lookup, num_workers=None):
     print("OVERALL PROCESSING SUMMARY")
     print("=" * 60)
     print(f"Files processed successfully: {overall_stats['files_processed']}")
-    print(f"Files skipped (already enriched): {overall_stats['files_skipped']}")
     print(f"Files failed: {overall_stats['files_failed']}")
     print(f"Total entries processed: {overall_stats['total_entries']}")
     print(f"Total entries enriched: {overall_stats['total_enriched']}")
