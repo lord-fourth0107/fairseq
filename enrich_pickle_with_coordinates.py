@@ -15,13 +15,35 @@ import multiprocessing as mp
 from collections import defaultdict
 from functools import partial
 
-def load_coordinate_data():
+def load_coordinate_data(input_path):
     """Load and merge coordinate data from both CSV files."""
     print("Loading coordinate data...")
     
-    # Load both CSV files
-    joined_path = os.path.expanduser('~/Downloads/joined.csv')
-    channels_path = os.path.expanduser('~/Downloads/channels.csv')
+    # Determine the directory to look for CSV files
+    if os.path.isfile(input_path):
+        # If input is a file, look in its directory
+        csv_dir = os.path.dirname(input_path)
+    else:
+        # If input is a directory, look in that directory
+        csv_dir = input_path
+    
+    # Look for CSV files in the input directory
+    joined_path = os.path.join(csv_dir, 'joined.csv')
+    channels_path = os.path.join(csv_dir, 'channels.csv')
+    
+    # Check if files exist
+    if not os.path.exists(joined_path):
+        print(f"Error: joined.csv not found in {csv_dir}")
+        print("Please ensure joined.csv is in the same directory as your pickle files")
+        return None
+    
+    if not os.path.exists(channels_path):
+        print(f"Error: channels.csv not found in {csv_dir}")
+        print("Please ensure channels.csv is in the same directory as your pickle files")
+        return None
+    
+    print(f"Found joined.csv at: {joined_path}")
+    print(f"Found channels.csv at: {channels_path}")
     
     joined_df = pd.read_csv(joined_path, dtype=str)
     channels_df = pd.read_csv(channels_path, dtype=str)
@@ -212,6 +234,10 @@ def process_pickle_files(input_path, coord_lookup, num_workers=None):
     if not pickle_files:
         return
     
+    if coord_lookup is None:
+        print("Error: Could not load coordinate data. Exiting.")
+        return
+    
     # Determine number of workers
     if num_workers is None:
         num_workers = min(mp.cpu_count(), len(pickle_files))
@@ -301,6 +327,7 @@ def main():
         epilog="""
 Examples:
   # Process all pickle files in a directory (auto-detect CPU cores)
+  # Note: joined.csv and channels.csv should be in the same directory
   python enrich_pickle_with_coordinates.py /path/to/pickle/files/
   
   # Process with specific number of workers
@@ -321,7 +348,7 @@ Examples:
         'input_path',
         nargs='?',
         default=os.path.expanduser("~/Downloads"),
-        help='Path to pickle file or directory containing pickle files (default: ~/Downloads)'
+        help='Path to pickle file or directory containing pickle files. joined.csv and channels.csv should be in the same directory (default: ~/Downloads)'
     )
     
     parser.add_argument(
@@ -356,8 +383,8 @@ Examples:
     else:
         print(f"Processing mode: Parallel (up to {num_workers if num_workers else mp.cpu_count()} workers)")
     
-    # Load coordinate data
-    coord_lookup = load_coordinate_data()
+    # Load coordinate data from the input path
+    coord_lookup = load_coordinate_data(args.input_path)
     
     # Process pickle files
     process_pickle_files(args.input_path, coord_lookup, num_workers)

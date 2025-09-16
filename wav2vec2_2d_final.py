@@ -419,6 +419,25 @@ def train_epoch(model, dataloader, optimizer, device, rank):
                 features_only=False
             )
             
+            # Debug: Always print outputs structure for debugging
+            if batch_idx < 5:  # Print for first 5 batches
+                print(f"🔍 Batch {batch_idx} outputs type: {type(outputs)}")
+                if isinstance(outputs, tuple):
+                    print(f"🔍 Tuple length: {len(outputs)}")
+                    for i, item in enumerate(outputs):
+                        print(f"🔍   [{i}]: {type(item)} - {item.shape if hasattr(item, 'shape') else 'no shape'}")
+                elif isinstance(outputs, dict):
+                    print(f"🔍 Dict keys: {list(outputs.keys())}")
+                    for key, value in outputs.items():
+                        if isinstance(value, torch.Tensor):
+                            print(f"🔍   {key}: {value.shape} ({value.dtype})")
+                        else:
+                            print(f"🔍   {key}: {type(value)} = {value}")
+                else:
+                    print(f"🔍 Other type: {type(outputs)}")
+                    if hasattr(outputs, 'shape'):
+                        print(f"🔍   shape: {outputs.shape}")
+            
             # Debug: Print model outputs structure (only on first batch and rank 0)
             if batch_idx == 0 and rank == 0:
                 print(f"\nModel outputs structure:")
@@ -433,76 +452,68 @@ def train_epoch(model, dataloader, optimizer, device, rank):
                     if hasattr(outputs, 'shape'):
                         print(f"  outputs shape: {outputs.shape}")
             
-            # Compute contrastive and diversity losses from model outputs dict
+            # Compute contrastive and diversity losses from model outputs
             try:
                 # Initialize default losses
                 contrastive_loss = torch.tensor(0.0, device=device)
                 diversity_loss = torch.tensor(0.0, device=device)
                 loss = torch.tensor(0.0, device=device)
                 
+                # Handle different output types in a cleaner way
                 if isinstance(outputs, dict):
-                    # Prefer computing contrastive loss from logits when available
-                    if 'x' in outputs:
+                    # Handle dictionary outputs
+                    if 'loss' in outputs and isinstance(outputs['loss'], torch.Tensor):
+                        loss = outputs['loss']
+                    elif 'x' in outputs and isinstance(outputs['x'], torch.Tensor):
+                        # Compute contrastive loss from logits
                         raw_logits = outputs['x']
-                        if isinstance(raw_logits, torch.Tensor) and raw_logits.ndim == 3:
-                            # Prefer (B, T, C) layout; fallback to (C, B, T)
+                        if raw_logits.ndim == 3:
                             try:
                                 B, T, C = raw_logits.shape
-                                logits_bt_c = raw_logits.contiguous().view(-1, C)  # [B*T, C]
+                                logits_bt_c = raw_logits.contiguous().view(-1, C)
                                 targets_bt = torch.zeros(B * T, dtype=torch.long, device=device)
-                            except Exception:
-                                C, B, T = raw_logits.shape
-                                logits_bt_c = raw_logits.permute(1, 2, 0).contiguous().view(-1, C)
-                                targets_bt = torch.zeros(B * T, dtype=torch.long, device=device)
-                            contrastive_loss = nn.CrossEntropyLoss()(logits_bt_c, targets_bt)
-                    elif 'contrastive_loss' in outputs:
-                        contrastive_loss = outputs['contrastive_loss'] if isinstance(outputs['contrastive_loss'], torch.Tensor) else torch.tensor(float(outputs['contrastive_loss']), device=device)
-
-                    # Diversity component
-                    if 'diversity_loss' in outputs:
-                        diversity_loss = outputs['diversity_loss'] if isinstance(outputs['diversity_loss'], torch.Tensor) else torch.tensor(float(outputs['diversity_loss']), device=device)
-                    elif ('prob_perplexity' in outputs) and ('num_vars' in outputs):
-                        num_vars = outputs['num_vars']
-                        prob_ppl = outputs['prob_perplexity']
-                        if isinstance(num_vars, torch.Tensor) and isinstance(prob_ppl, torch.Tensor):
-                            diversity_loss = (num_vars - prob_ppl) / torch.clamp(num_vars, min=1)
-                            diversity_loss = diversity_loss.mean()
-
-                    # Always construct training loss from contrastive + diversity when logits were present
-                    if 'x' in outputs:
-                        loss = contrastive_loss + 0.1 * diversity_loss
-                    else:
-                        # Fallback only if logits missing
-                        if 'loss' in outputs and isinstance(outputs['loss'], torch.Tensor):
-                            loss = outputs['loss']
-                        elif 'features_pen' in outputs and isinstance(outputs['features_pen'], torch.Tensor):
-                            loss = outputs['features_pen']
-                        else:
-                            loss = contrastive_loss + 0.1 * diversity_loss
-                elif isinstance(outputs, tuple):
-                    # Handle tuple output - assume first element is logits
-                    if len(outputs) > 0 and isinstance(outputs[0], torch.Tensor):
-                        raw_logits = outputs[0]
-                        if len(raw_logits.shape) >= 2:
-                            try:
-                                # Try (B, T, C) format first
-                                B, T, C = raw_logits.shape
-                                logits_bt_c = raw_logits.contiguous().view(-1, C)  # [B*T, C]
-                                targets_bt = torch.zeros(B * T, dtype=torch.long, device=device)
-                            except Exception:
-                                # Fallback to (C, B, T) format
-                                C, B, T = raw_logits.shape
-                                logits_bt_c = raw_logits.permute(1, 2, 0).contiguous().view(-1, C)
-                                targets_bt = torch.zeros(B * T, dtype=torch.long, device=device)
-                            contrastive_loss = nn.CrossEntropyLoss()(logits_bt_c, targets_bt)
-                            loss = contrastive_loss + 0.1 * diversity_loss
+                                contrastive_loss = nn.CrossEntropyLoss()(logits_bt_c, targets_bt)
+                                loss = contrastive_loss
+                            except Exception as e:
+                                print(f"🔍 Error processing logits: {e}")
+                                loss = torch.tensor(0.1, device=device)
                         else:
                             loss = torch.tensor(0.1, device=device)
                     else:
                         loss = torch.tensor(0.1, device=device)
+                        
+                elif isinstance(outputs, tuple):
+                    # Handle tuple outputs safely
+                    print(f"🔍 Tuple outputs: len={len(outputs)}")
+                    for i, item in enumerate(outputs):
+                        print(f"  [{i}]: {type(item)} - {item.shape if hasattr(item, 'shape') else 'no shape'}")
+                    
+                    if len(outputs) > 0:
+                        try:
+                            raw_logits = outputs[0]
+                            if isinstance(raw_logits, torch.Tensor) and raw_logits.ndim >= 2:
+                                try:
+                                    B, T, C = raw_logits.shape
+                                    logits_bt_c = raw_logits.contiguous().view(-1, C)
+                                    targets_bt = torch.zeros(B * T, dtype=torch.long, device=device)
+                                    contrastive_loss = nn.CrossEntropyLoss()(logits_bt_c, targets_bt)
+                                    loss = contrastive_loss
+                                except Exception as e:
+                                    print(f"🔍 Error processing tuple logits: {e}")
+                                    loss = torch.tensor(0.1, device=device)
+                            else:
+                                print(f"🔍 Tuple item not suitable: {type(raw_logits)}")
+                                loss = torch.tensor(0.1, device=device)
+                        except Exception as e:
+                            print(f"🔍 Error accessing tuple[0]: {e}")
+                            loss = torch.tensor(0.1, device=device)
+                    else:
+                        print("🔍 Empty tuple outputs")
+                        loss = torch.tensor(0.1, device=device)
                 else:
-                    # Fallback: simple feature penalty
-                    loss = torch.tensor(0.1, device=device)  # Small positive loss to avoid zero
+                    # Fallback for other types
+                    print(f"🔍 Unknown output type: {type(outputs)}")
+                    loss = torch.tensor(0.1, device=device)
                 
                 # Ensure all losses are tensors and have valid values
                 if not isinstance(contrastive_loss, torch.Tensor):
@@ -573,6 +584,8 @@ def train_epoch(model, dataloader, optimizer, device, rank):
                 
         except Exception as e:
             print(f"Rank {rank} - Batch {batch_idx} error: {e}")
+            import traceback
+            print(f"Full traceback: {traceback.format_exc()}")
             continue
     
     return {
@@ -631,83 +644,60 @@ def validate_epoch(model, dataloader, device, rank):
                     else:
                         print(f"  Value: {outputs}")
                 
-                # Compute losses
+                # Compute losses for validation
                 try:
                     # Initialize default losses
                     contrastive_loss = torch.tensor(0.0, device=device)
                     diversity_loss = torch.tensor(0.0, device=device)
                     loss = torch.tensor(0.0, device=device)
                     
+                    # Handle different output types in a cleaner way
                     if isinstance(outputs, dict):
-                        # Try to get contrastive loss directly from model outputs
-                        if 'contrastive_loss' in outputs:
-                            contrastive_loss = outputs['contrastive_loss']
-                            if not isinstance(contrastive_loss, torch.Tensor):
-                                contrastive_loss = torch.tensor(float(contrastive_loss), device=device)
-                        elif 'x' in outputs:
+                        # Handle dictionary outputs
+                        if 'loss' in outputs and isinstance(outputs['loss'], torch.Tensor):
+                            loss = outputs['loss']
+                        elif 'x' in outputs and isinstance(outputs['x'], torch.Tensor):
                             # Compute contrastive loss from logits
                             raw_logits = outputs['x']
-                            if isinstance(raw_logits, torch.Tensor) and len(raw_logits.shape) >= 2:
+                            if raw_logits.ndim == 3:
                                 try:
-                                    # Try (B, T, C) format first
                                     B, T, C = raw_logits.shape
-                                    logits_bt_c = raw_logits.contiguous().view(-1, C)  # [B*T, C]
+                                    logits_bt_c = raw_logits.contiguous().view(-1, C)
                                     targets_bt = torch.zeros(B * T, dtype=torch.long, device=device)
-                                except Exception:
-                                    # Fallback to (C, B, T) format
-                                    C, B, T = raw_logits.shape
-                                    logits_bt_c = raw_logits.permute(1, 2, 0).contiguous().view(-1, C)
-                                    targets_bt = torch.zeros(B * T, dtype=torch.long, device=device)
-                                contrastive_loss = nn.CrossEntropyLoss()(logits_bt_c, targets_bt)
-                        
-                        # Try to get diversity loss
-                        if 'diversity_loss' in outputs:
-                            diversity_loss = outputs['diversity_loss']
-                            if not isinstance(diversity_loss, torch.Tensor):
-                                diversity_loss = torch.tensor(float(diversity_loss), device=device)
-                        elif ('prob_perplexity' in outputs) and ('num_vars' in outputs):
-                            num_vars = outputs['num_vars']
-                            prob_ppl = outputs['prob_perplexity']
-                            if isinstance(num_vars, torch.Tensor) and isinstance(prob_ppl, torch.Tensor):
-                                diversity_loss = (num_vars - prob_ppl) / max(num_vars, 1)
-                                if isinstance(diversity_loss, torch.Tensor):
-                                    diversity_loss = diversity_loss.mean()
-                        
-                        # Try to get total loss
-                        if 'loss' in outputs:
-                            loss = outputs['loss']
-                            if not isinstance(loss, torch.Tensor):
-                                loss = torch.tensor(float(loss), device=device)
-                        elif 'features_pen' in outputs:
-                            loss = outputs['features_pen']
-                            if not isinstance(loss, torch.Tensor):
-                                loss = torch.tensor(float(loss), device=device)
-                        else:
-                            # Compute total loss
-                            loss = contrastive_loss + 0.1 * diversity_loss
-                    elif isinstance(outputs, tuple):
-                        # Handle tuple output - assume first element is logits
-                        if len(outputs) > 0 and isinstance(outputs[0], torch.Tensor):
-                            raw_logits = outputs[0]
-                            if len(raw_logits.shape) >= 2:
-                                try:
-                                    # Try (B, T, C) format first
-                                    B, T, C = raw_logits.shape
-                                    logits_bt_c = raw_logits.contiguous().view(-1, C)  # [B*T, C]
-                                    targets_bt = torch.zeros(B * T, dtype=torch.long, device=device)
-                                except Exception:
-                                    # Fallback to (C, B, T) format
-                                    C, B, T = raw_logits.shape
-                                    logits_bt_c = raw_logits.permute(1, 2, 0).contiguous().view(-1, C)
-                                    targets_bt = torch.zeros(B * T, dtype=torch.long, device=device)
-                                contrastive_loss = nn.CrossEntropyLoss()(logits_bt_c, targets_bt)
-                                loss = contrastive_loss + 0.1 * diversity_loss
+                                    contrastive_loss = nn.CrossEntropyLoss()(logits_bt_c, targets_bt)
+                                    loss = contrastive_loss
+                                except Exception as e:
+                                    print(f"🔍 Error processing logits: {e}")
+                                    loss = torch.tensor(0.1, device=device)
                             else:
                                 loss = torch.tensor(0.1, device=device)
                         else:
                             loss = torch.tensor(0.1, device=device)
+                            
+                    elif isinstance(outputs, tuple):
+                        # Handle tuple outputs safely
+                        if len(outputs) > 0:
+                            try:
+                                raw_logits = outputs[0]
+                                if isinstance(raw_logits, torch.Tensor) and raw_logits.ndim >= 2:
+                                    try:
+                                        B, T, C = raw_logits.shape
+                                        logits_bt_c = raw_logits.contiguous().view(-1, C)
+                                        targets_bt = torch.zeros(B * T, dtype=torch.long, device=device)
+                                        contrastive_loss = nn.CrossEntropyLoss()(logits_bt_c, targets_bt)
+                                        loss = contrastive_loss
+                                    except Exception as e:
+                                        print(f"🔍 Error processing tuple logits: {e}")
+                                        loss = torch.tensor(0.1, device=device)
+                                else:
+                                    loss = torch.tensor(0.1, device=device)
+                            except Exception as e:
+                                print(f"🔍 Error accessing tuple[0]: {e}")
+                                loss = torch.tensor(0.1, device=device)
+                        else:
+                            loss = torch.tensor(0.1, device=device)
                     else:
-                        # Fallback: simple feature penalty
+                        # Fallback for other types
                         loss = torch.tensor(0.1, device=device)
                     
                     # Ensure all losses are tensors and have valid values
