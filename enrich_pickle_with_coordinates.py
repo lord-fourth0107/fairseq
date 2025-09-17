@@ -18,6 +18,8 @@ from tqdm import tqdm
 
 def load_coordinate_data(input_path):
     """Load and merge coordinate data from both CSV files."""
+    import time
+    start_time = time.time()
     print("Loading coordinate data...")
     
     # Determine the directory to look for CSV files
@@ -46,8 +48,14 @@ def load_coordinate_data(input_path):
     print(f"Found joined.csv at: {joined_path}")
     print(f"Found channels.csv at: {channels_path}")
     
+    # Load CSV files with timing
+    csv_start = time.time()
     joined_df = pd.read_csv(joined_path, dtype=str)
+    print(f"Loaded joined.csv: {time.time() - csv_start:.2f}s")
+    
+    csv_start = time.time()
     channels_df = pd.read_csv(channels_path, dtype=str)
+    print(f"Loaded channels.csv: {time.time() - csv_start:.2f}s")
     
     print(f"Loaded joined.csv: {joined_df.shape}")
     print(f"Loaded channels.csv: {channels_df.shape}")
@@ -82,25 +90,33 @@ def load_coordinate_data(input_path):
         }
     
     print(f"Created coordinate lookup with {len(coord_lookup)} entries")
+    print(f"Total CSV loading time: {time.time() - start_time:.2f}s")
     return coord_lookup
 
 def enrich_pickle_file(pickle_path, coord_lookup):
     """Enrich a pickle file with coordinate information."""
+    import time
+    start_time = time.time()
+    
     print(f"\nProcessing pickle file: {pickle_path}")
     
     # Create backup
+    backup_start = time.time()
     backup_path = pickle_path + '.backup'
     if not os.path.exists(backup_path):
         shutil.copy2(pickle_path, backup_path)
         print(f"Created backup: {backup_path}")
+    print(f"Backup time: {time.time() - backup_start:.2f}s")
     
     # Load the pickle file
+    load_start = time.time()
     with open(pickle_path, 'rb') as f:
         data = pickle.load(f)
-    
+    print(f"Load time: {time.time() - load_start:.2f}s")
     print(f"Loaded {len(data)} entries")
     
     # Process each entry
+    process_start = time.time()
     enriched_data = []
     stats = {
         'total': 0,
@@ -109,7 +125,9 @@ def enrich_pickle_file(pickle_path, coord_lookup):
         'parse_error': 0
     }
     
-    for entry in data:
+    for i, entry in enumerate(data):
+        if i % 50000 == 0 and i > 0:
+            print(f"  Processed {i}/{len(data)} entries ({i/len(data)*100:.1f}%)")
         stats['total'] += 1
         
         if isinstance(entry, tuple) and len(entry) >= 2:
@@ -125,12 +143,28 @@ def enrich_pickle_file(pickle_path, coord_lookup):
                         probe_id = parts[2]
                         channel_id = parts[3]
                         
+                        # Clean up the label by removing everything after the brain region
+                        # Find the brain region (usually the last meaningful part before coordinates)
+                        # Look for common brain region patterns
+                        brain_region = None
+                        for i in range(4, len(parts)):
+                            if parts[i] in ['APN', 'CA1', 'CA2', 'CA3', 'DG', 'SUB', 'VIS', 'AUD', 'SOM', 'GUST', 'OLF', 'TH', 'HY', 'MB', 'P', 'MY']:
+                                brain_region = parts[i]
+                                break
+                        
+                        if brain_region:
+                            # Create clean base label: session_count_probe_channel_brain_region
+                            clean_label = f"{session_id}_{count}_{probe_id}_{channel_id}_{brain_region}"
+                        else:
+                            # Fallback: use first 5 parts if no brain region found
+                            clean_label = '_'.join(parts[:5])
+                        
                         # Look up coordinates
                         lookup_key = (session_id, probe_id, channel_id)
                         if lookup_key in coord_lookup:
                             coords = coord_lookup[lookup_key]
-                            # Append coordinates to the label
-                            enriched_label = f"{label}_{coords['ap']}_{coords['dv']}_{coords['lr']}_{coords['probe_h']}_{coords['probe_v']}"
+                            # Append fresh coordinates to the clean label
+                            enriched_label = f"{clean_label}_{coords['ap']}_{coords['dv']}_{coords['lr']}_{coords['probe_h']}_{coords['probe_v']}"
                             enriched_data.append((signal, enriched_label))
                             stats['enriched'] += 1
                         else:
@@ -149,7 +183,7 @@ def enrich_pickle_file(pickle_path, coord_lookup):
                                     
                                     if lookup_key in coord_lookup:
                                         coords = coord_lookup[lookup_key]
-                                        enriched_label = f"{label}_{coords['ap']}_{coords['dv']}_{coords['lr']}_{coords['probe_h']}_{coords['probe_v']}"
+                                        enriched_label = f"{clean_label}_{coords['ap']}_{coords['dv']}_{coords['lr']}_{coords['probe_h']}_{coords['probe_v']}"
                                         enriched_data.append((signal, enriched_label))
                                         stats['enriched'] += 1
                                     else:
@@ -174,6 +208,8 @@ def enrich_pickle_file(pickle_path, coord_lookup):
             enriched_data.append(entry)  # Keep original
     
     # Print statistics
+    process_time = time.time() - process_start
+    print(f"Processing time: {process_time:.2f}s")
     print(f"Enrichment statistics:")
     print(f"  Total entries: {stats['total']}")
     print(f"  Successfully enriched: {stats['enriched']}")
@@ -182,9 +218,11 @@ def enrich_pickle_file(pickle_path, coord_lookup):
     print(f"  Success rate: {stats['enriched']/stats['total']*100:.1f}%")
     
     # Save the enriched data
+    save_start = time.time()
     with open(pickle_path, 'wb') as f:
         pickle.dump(enriched_data, f)
-    
+    print(f"Save time: {time.time() - save_start:.2f}s")
+    print(f"Total time: {time.time() - start_time:.2f}s")
     print(f"Saved enriched data to: {pickle_path}")
     
     return stats
