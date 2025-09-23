@@ -50,74 +50,49 @@ def load_coordinate_data(input_path):
     
     # Load CSV files with timing
     csv_start = time.time()
-    joined_df = pd.read_csv(joined_path, dtype=str)
+    joined_df = pd.read_csv(joined_path)
     print(f"Loaded joined.csv: {time.time() - csv_start:.2f}s")
     
     csv_start = time.time()
-    channels_df = pd.read_csv(channels_path, dtype=str)
+    channels_df = pd.read_csv(channels_path)
     print(f"Loaded channels.csv: {time.time() - csv_start:.2f}s")
     
     print(f"Loaded joined.csv: {joined_df.shape}")
     print(f"Loaded channels.csv: {channels_df.shape}")
     
-    # Rename columns to avoid conflicts before merging
-    joined_renamed = joined_df[['session_id', 'probe_id']].copy()
-    channels_renamed = channels_df[['ecephys_probe_id', 'local_index', 'probe_horizontal_position', 
-                                   'probe_vertical_position', 'anterior_posterior_ccf_coordinate', 
-                                   'dorsal_ventral_ccf_coordinate', 'left_right_ccf_coordinate']].copy()
-    
-    # Merge on probe_id to get session info
+    # Merge joined.csv and channels.csv on probe_id
+    # joined.csv has: session_id, probe_id, coordinates
+    # channels.csv has: id (channel_id), ecephys_probe_id, probe positions
     merged_df = pd.merge(
-        joined_renamed,
-        channels_renamed,
-        left_on='probe_id', 
-        right_on='ecephys_probe_id', 
+        joined_df,
+        channels_df,
+        left_on='probe_id',
+        right_on='ecephys_probe_id',
         how='inner'
     )
     
     print(f"Merged data shape: {merged_df.shape}")
     
-    # Create a lookup dictionary: (session_id, probe_id, local_index) -> coordinates
+    # Create a lookup dictionary: (session_id, probe_id, channel_id) -> coordinates
     coord_lookup = {}
     for _, row in merged_df.iterrows():
-        key = (row['session_id'], row['probe_id'], str(row['local_index']))
+        # Use channel_id from channels.csv
+        key = (str(row['session_id']), str(row['probe_id']), str(row['id']))
         coord_lookup[key] = {
-            'ap': row['anterior_posterior_ccf_coordinate'],
-            'dv': row['dorsal_ventral_ccf_coordinate'],
-            'lr': row['left_right_ccf_coordinate'],
-            'probe_h': row['probe_horizontal_position'],
-            'probe_v': row['probe_vertical_position']
+            'ap': row['anterior_posterior_ccf_coordinate_x'],  # From joined.csv
+            'dv': row['dorsal_ventral_ccf_coordinate_x'],      # From joined.csv
+            'lr': row['left_right_ccf_coordinate_x'],          # From joined.csv
+            'probe_h': row['probe_horizontal_position'],       # From channels.csv
+            'probe_v': row['probe_vertical_position']          # From channels.csv
         }
     
     print(f"Created coordinate lookup with {len(coord_lookup)} entries")
     print(f"Total CSV loading time: {time.time() - start_time:.2f}s")
     return coord_lookup
 
-def enrich_pickle_file(pickle_path, coord_lookup):
-    """Enrich a pickle file with coordinate information."""
-    import time
-    start_time = time.time()
-    
-    print(f"\nProcessing pickle file: {pickle_path}")
-    
-    # Create backup
-    backup_start = time.time()
-    backup_path = pickle_path + '.backup'
-    if not os.path.exists(backup_path):
-        shutil.copy2(pickle_path, backup_path)
-        print(f"Created backup: {backup_path}")
-    print(f"Backup time: {time.time() - backup_start:.2f}s")
-    
-    # Load the pickle file
-    load_start = time.time()
-    with open(pickle_path, 'rb') as f:
-        data = pickle.load(f)
-    print(f"Load time: {time.time() - load_start:.2f}s")
-    print(f"Loaded {len(data)} entries")
-    
-    # Process each entry
-    process_start = time.time()
-    enriched_data = []
+def process_entry_batch(entry_batch, coord_lookup):
+    """Process a batch of entries for multiprocessing."""
+    enriched_batch = []
     stats = {
         'total': 0,
         'enriched': 0,
@@ -125,9 +100,7 @@ def enrich_pickle_file(pickle_path, coord_lookup):
         'parse_error': 0
     }
     
-    for i, entry in enumerate(data):
-        if i % 50000 == 0 and i > 0:
-            print(f"  Processed {i}/{len(data)} entries ({i/len(data)*100:.1f}%)")
+    for entry in entry_batch:
         stats['total'] += 1
         
         if isinstance(entry, tuple) and len(entry) >= 2:
@@ -159,53 +132,96 @@ def enrich_pickle_file(pickle_path, coord_lookup):
                             # Fallback: use first 5 parts if no brain region found
                             clean_label = '_'.join(parts[:5])
                         
-                        # Look up coordinates
+                        # Look up coordinates using channel_id from the label
+                        # The channel_id should match the 'id' field in channels.csv
                         lookup_key = (session_id, probe_id, channel_id)
                         if lookup_key in coord_lookup:
                             coords = coord_lookup[lookup_key]
                             # Append fresh coordinates to the clean label
                             enriched_label = f"{clean_label}_{coords['ap']}_{coords['dv']}_{coords['lr']}_{coords['probe_h']}_{coords['probe_v']}"
-                            enriched_data.append((signal, enriched_label))
+                            enriched_batch.append((signal, enriched_label))
                             stats['enriched'] += 1
                         else:
-                            # If not found, try with local_index instead of channel_id
-                            # Get all available local_index values for this (session_id, probe_id)
-                            available_indices = [k[2] for k in coord_lookup.keys() 
-                                              if k[0] == session_id and k[1] == probe_id]
-                            
-                            if available_indices:
-                                # Use modulo to cycle through available indices
-                                try:
-                                    channel_idx = int(channel_id)
-                                    coord_idx = channel_idx % len(available_indices)
-                                    selected_index = available_indices[coord_idx]
-                                    lookup_key = (session_id, probe_id, selected_index)
-                                    
-                                    if lookup_key in coord_lookup:
-                                        coords = coord_lookup[lookup_key]
-                                        enriched_label = f"{clean_label}_{coords['ap']}_{coords['dv']}_{coords['lr']}_{coords['probe_h']}_{coords['probe_v']}"
-                                        enriched_data.append((signal, enriched_label))
-                                        stats['enriched'] += 1
-                                    else:
-                                        enriched_data.append(entry)  # Keep original
-                                        stats['not_found'] += 1
-                                except ValueError:
-                                    enriched_data.append(entry)  # Keep original
-                                    stats['parse_error'] += 1
-                            else:
-                                enriched_data.append(entry)  # Keep original
-                                stats['not_found'] += 1
+                            # If not found, keep original entry
+                            enriched_batch.append(entry)  # Keep original
+                            stats['not_found'] += 1
                     except Exception as e:
-                        enriched_data.append(entry)  # Keep original
+                        enriched_batch.append(entry)  # Keep original
                         stats['parse_error'] += 1
                 else:
-                    enriched_data.append(entry)  # Keep original
+                    enriched_batch.append(entry)  # Keep original
                     stats['parse_error'] += 1
             else:
-                enriched_data.append(entry)  # Keep original
+                enriched_batch.append(entry)  # Keep original
                 stats['parse_error'] += 1
         else:
-            enriched_data.append(entry)  # Keep original
+            enriched_batch.append(entry)  # Keep original
+    
+    return enriched_batch, stats
+
+def enrich_pickle_file(pickle_path, coord_lookup, batch_size=10000, num_workers=None):
+    """Enrich a pickle file with coordinate information using multiprocessing for large files."""
+    import time
+    start_time = time.time()
+    
+    print(f"\nProcessing pickle file: {pickle_path}")
+    
+    # Create backup
+    backup_start = time.time()
+    backup_path = pickle_path + '.backup'
+    if not os.path.exists(backup_path):
+        shutil.copy2(pickle_path, backup_path)
+        print(f"Created backup: {backup_path}")
+    print(f"Backup time: {time.time() - backup_start:.2f}s")
+    
+    # Load the pickle file
+    load_start = time.time()
+    with open(pickle_path, 'rb') as f:
+        data = pickle.load(f)
+    print(f"Load time: {time.time() - load_start:.2f}s")
+    print(f"Loaded {len(data)} entries")
+    
+    # Determine if we should use multiprocessing
+    use_multiprocessing = len(data) > batch_size and num_workers and num_workers > 1
+    
+    if use_multiprocessing:
+        print(f"Using multiprocessing with {num_workers} workers, batch size {batch_size}")
+        
+        # Split data into batches
+        batches = [data[i:i + batch_size] for i in range(0, len(data), batch_size)]
+        print(f"Split into {len(batches)} batches")
+        
+        # Process batches in parallel
+        process_start = time.time()
+        enriched_data = []
+        overall_stats = {
+            'total': 0,
+            'enriched': 0,
+            'not_found': 0,
+            'parse_error': 0
+        }
+        
+        # Create partial function for multiprocessing
+        process_func = partial(process_entry_batch, coord_lookup=coord_lookup)
+        
+        with mp.Pool(processes=num_workers) as pool:
+            results = pool.imap(process_func, batches)
+            
+            with tqdm(total=len(batches), desc="Processing batches", unit="batch") as pbar:
+                for enriched_batch, stats in results:
+                    enriched_data.extend(enriched_batch)
+                    overall_stats['total'] += stats['total']
+                    overall_stats['enriched'] += stats['enriched']
+                    overall_stats['not_found'] += stats['not_found']
+                    overall_stats['parse_error'] += stats['parse_error']
+                    pbar.update(1)
+        
+        stats = overall_stats
+    else:
+        # Process sequentially for small files or single worker
+        print("Processing sequentially")
+        process_start = time.time()
+        enriched_data, stats = process_entry_batch(data, coord_lookup)
     
     # Print statistics
     process_time = time.time() - process_start
@@ -279,11 +295,11 @@ def should_skip_pickle(pickle_path: str, sample_size: int = 50, threshold: float
 
 def process_single_pickle_file(args):
     """Worker function to process a single pickle file."""
-    pickle_path, coord_lookup = args
+    pickle_path, coord_lookup, batch_size, num_workers = args
     
     try:
         # Process all files without checking if already enriched
-        stats = enrich_pickle_file(pickle_path, coord_lookup)
+        stats = enrich_pickle_file(pickle_path, coord_lookup, batch_size, num_workers)
         stats['skipped'] = False
         return {
             'file': pickle_path,
@@ -320,7 +336,7 @@ def find_pickle_files(input_path):
         print(f"Error: {input_path} is not a valid file or directory")
         return []
 
-def process_pickle_files(input_path, coord_lookup, num_workers=None):
+def process_pickle_files(input_path, coord_lookup, num_workers=None, batch_size=10000):
     """Process all pickle files in the given path using multiprocessing."""
     pickle_files = find_pickle_files(input_path)
     
@@ -339,10 +355,11 @@ def process_pickle_files(input_path, coord_lookup, num_workers=None):
     print(f"Found {len(pickle_files)} pickle file(s) to process")
     print(f"System CPU cores available: {total_cores}")
     print(f"Using {num_workers} worker process(es)")
+    print(f"Batch size for large files: {batch_size}")
     print("=" * 60)
     
     # Prepare arguments for worker processes
-    worker_args = [(pickle_path, coord_lookup) for pickle_path in pickle_files]
+    worker_args = [(pickle_path, coord_lookup, batch_size, num_workers) for pickle_path in pickle_files]
     
     # Overall statistics
     overall_stats = {
@@ -359,7 +376,7 @@ def process_pickle_files(input_path, coord_lookup, num_workers=None):
         # Single file or single worker - process sequentially
         print("Processing files sequentially...")
         for i, pickle_path in enumerate(tqdm(pickle_files, desc="Sequential", unit="file"), 1):
-            result = process_single_pickle_file((pickle_path, coord_lookup))
+            result = process_single_pickle_file((pickle_path, coord_lookup, batch_size, num_workers))
             
             if result['success']:
                 stats = result['stats']
@@ -418,8 +435,8 @@ Examples:
   # Note: joined.csv and channels.csv should be in the same directory
   python enrich_pickle_with_coordinates.py /path/to/pickle/files/
   
-  # Process with specific number of workers
-  python enrich_pickle_with_coordinates.py /path/to/pickle/files/ --workers 4
+  # Process with specific number of workers and batch size
+  python enrich_pickle_with_coordinates.py /path/to/pickle/files/ --workers 8 --batch-size 5000
   
   # Process a single pickle file
   python enrich_pickle_with_coordinates.py /path/to/file.pickle
@@ -429,6 +446,9 @@ Examples:
   
   # Disable parallel processing (sequential)
   python enrich_pickle_with_coordinates.py /path/to/pickle/files/ --no-parallel
+  
+  # HPC-friendly: Use many workers with smaller batches
+  python enrich_pickle_with_coordinates.py /path/to/pickle/files/ --workers 32 --batch-size 2000
         """
     )
     
@@ -453,6 +473,13 @@ Examples:
         help='Disable parallel processing and use single worker'
     )
     
+    parser.add_argument(
+        '--batch-size',
+        type=int,
+        default=10000,
+        help='Batch size for processing large pickle files (default: 10000)'
+    )
+    
     args = parser.parse_args()
     
     # Determine number of workers
@@ -475,7 +502,7 @@ Examples:
     coord_lookup = load_coordinate_data(args.input_path)
     
     # Process pickle files
-    process_pickle_files(args.input_path, coord_lookup, num_workers)
+    process_pickle_files(args.input_path, coord_lookup, num_workers, args.batch_size)
 
 if __name__ == "__main__":
     # Required for multiprocessing on Windows
