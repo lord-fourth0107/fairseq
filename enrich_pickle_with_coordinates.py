@@ -294,12 +294,19 @@ def should_skip_pickle(pickle_path: str, sample_size: int = 50, threshold: float
         return False
 
 def process_single_pickle_file(args):
-    """Worker function to process a single pickle file."""
+    """Worker function to process a single pickle file.
+
+    IMPORTANT: This function is typically called from a multiprocessing pool
+    that parallelizes across files. To avoid nested multiprocessing (which is
+    fragile on many HPC systems), we force per-file processing to be
+    sequential by passing num_workers=1 to enrich_pickle_file.
+    """
     pickle_path, coord_lookup, batch_size, num_workers = args
     
     try:
         # Process all files without checking if already enriched
-        stats = enrich_pickle_file(pickle_path, coord_lookup, batch_size, num_workers)
+        # Disable inner multiprocessing to avoid nested pools
+        stats = enrich_pickle_file(pickle_path, coord_lookup, batch_size, num_workers=1)
         stats['skipped'] = False
         return {
             'file': pickle_path,
@@ -406,6 +413,8 @@ def process_pickle_files(input_path, coord_lookup, num_workers=None, batch_size=
                         overall_stats['total_parse_errors'] += stats['parse_error']
                     else:
                         overall_stats['files_failed'] += 1
+                        # Surface the error so failures are diagnosable
+                        print(f"Error processing {result['file']}: {result['error']}")
     
     # Print overall summary
     print("\n" + "=" * 60)
