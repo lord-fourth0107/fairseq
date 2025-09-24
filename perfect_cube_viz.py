@@ -102,17 +102,12 @@ def process_single_pickle(pickle_file, coord_lookup):
         
         # Extract filename for probe identification
         filename = os.path.basename(pickle_file)
-        if '715093703_810755797' in filename:
-            probe_id = '810755797'
-            session_id = '715093703'
-            probe_color = 'red'
-        elif '847657808_848037578' in filename:
-            probe_id = '848037578'
-            session_id = '847657808'
-            probe_color = 'green'
-        else:
-            print(f"Unknown probe in file: {filename}")
+        name_no_ext = os.path.splitext(filename)[0]
+        if '_' not in name_no_ext:
+            print(f"Filename does not match pattern session_probe: {filename}")
             return None, None, None
+        session_id, probe_id = name_no_ext.split('_', 1)
+        probe_color = 'red'
         
         print(f"Probe ID: {probe_id}, Session: {session_id}, Color: {probe_color}")
         
@@ -288,6 +283,107 @@ def create_perfect_cube_plot(voxel_grid, grid_info, probe_id, probe_color, outpu
     print(f"Saved: {os.path.join(output_dir, f'probe_{probe_id}_perfect_cubes.png')}")
     plt.close()
 
+def create_combined_perfect_cube_plot(probe_to_voxels, grid_info, output_dir, session_id):
+    """Create a single 3D plot with perfect cubes for each probe in different colors."""
+    os.makedirs(output_dir, exist_ok=True)
+    print(f"Creating combined perfect cube visualization for session {session_id}...")
+
+    # Color cycle for probes
+    color_cycle = [
+        'red', 'green', 'blue', 'orange', 'purple', 'brown', 'pink', 'gray',
+        'cyan', 'magenta', 'olive', 'teal'
+    ]
+
+    fig = plt.figure(figsize=(20, 15))
+    ax = fig.add_subplot(111, projection='3d')
+
+    voxel_size = grid_info['voxel_size_um']
+
+    unit_cube_vertices = np.array([
+        [0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],
+        [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]
+    ])
+    cube_faces = [
+        [0, 1, 2, 3],
+        [4, 5, 6, 7],
+        [0, 1, 5, 4],
+        [2, 3, 7, 6],
+        [0, 3, 7, 4],
+        [1, 2, 6, 5]
+    ]
+
+    all_centers = []
+
+    for idx, (probe_id, occupied_voxels) in enumerate(probe_to_voxels.items()):
+        if not occupied_voxels:
+            continue
+        probe_color = color_cycle[idx % len(color_cycle)]
+
+        ap_idx_arr = np.array([v[0] for v in occupied_voxels], dtype=int)
+        dv_idx_arr = np.array([v[1] for v in occupied_voxels], dtype=int)
+        lr_idx_arr = np.array([v[2] for v in occupied_voxels], dtype=int)
+
+        ap_coords = ap_idx_arr * voxel_size + grid_info['ap_min']
+        dv_coords = dv_idx_arr * voxel_size + grid_info['dv_min']
+        lr_coords = lr_idx_arr * voxel_size + grid_info['lr_min']
+
+        all_centers.append(np.vstack([ap_coords, dv_coords, lr_coords]).T)
+
+        faces = []
+        for i in range(len(ap_coords)):
+            cube_vertices = unit_cube_vertices * voxel_size + np.array([ap_coords[i], dv_coords[i], lr_coords[i]])
+            for face in cube_faces:
+                faces.append(cube_vertices[face])
+
+        collection = Poly3DCollection(faces, facecolor=probe_color, alpha=0.7, edgecolor='black', linewidth=0.5)
+        ax.add_collection3d(collection)
+        ax.scatter(lr_coords, dv_coords, ap_coords, c=probe_color, s=10, alpha=0.9, edgecolors='none')
+
+    if all_centers:
+        all_centers = np.concatenate(all_centers, axis=0)
+        ap_vals = all_centers[:, 0]
+        dv_vals = all_centers[:, 1]
+        lr_vals = all_centers[:, 2]
+        max_range = np.array([
+            ap_vals.max() - ap_vals.min(),
+            dv_vals.max() - dv_vals.min(),
+            lr_vals.max() - lr_vals.min(),
+        ]).max() / 2.0
+        mid_x = np.mean(ap_vals)
+        mid_y = np.mean(dv_vals)
+        mid_z = np.mean(lr_vals)
+        ax.set_xlim(mid_x - max_range, mid_x + max_range)
+        ax.set_ylim(mid_y - max_range, mid_y + max_range)
+        ax.set_zlim(mid_z - max_range, mid_z + max_range)
+
+    ax.set_xlabel('Anterior-Posterior (μm)', fontsize=14)
+    ax.set_ylabel('Dorsal-Ventral (μm)', fontsize=14)
+    ax.set_zlabel('Left-Right (μm)', fontsize=14)
+    ax.set_title(f'Session {session_id} - Perfect Cubes (Probes colored)', fontsize=16)
+    ax.view_init(elev=20, azim=45)
+    ax.grid(True, alpha=0.3)
+
+    out_path = os.path.join(output_dir, f'session_{session_id}_all_probes_perfect_cubes.png')
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=300, bbox_inches='tight')
+    print(f"Saved: {out_path}")
+    plt.close()
+
+def compute_occupied_voxels_for_coords(coordinates, grid_info):
+    """Given raw coordinates and a fixed grid, compute occupied voxel indices."""
+    occupied = set()
+    voxel = grid_info['voxel_size_um']
+    for coord in coordinates:
+        ap, dv, lr = coord['ap'], coord['dv'], coord['lr']
+        ap_idx = int((ap - grid_info['ap_min']) / voxel)
+        dv_idx = int((dv - grid_info['dv_min']) / voxel)
+        lr_idx = int((lr - grid_info['lr_min']) / voxel)
+        if (0 <= ap_idx < grid_info['ap_size'] and
+            0 <= dv_idx < grid_info['dv_size'] and
+            0 <= lr_idx < grid_info['lr_size']):
+            occupied.add((ap_idx, dv_idx, lr_idx))
+    return occupied
+
 def create_simple_cube_plot(voxel_grid, grid_info, probe_id, probe_color, output_dir="perfect_cube_viz"):
     """Create 3D plot with simple cube representation using scatter points."""
     
@@ -367,18 +463,20 @@ def print_voxel_statistics(voxel_grid, grid_info, coordinates, probe_id):
 
 def main():
     parser = argparse.ArgumentParser(description='Perfect Cube Voxel Visualization')
-    parser.add_argument('pickle_file', help='Path to pickle file to visualize')
-    parser.add_argument('input_path', help='Path to directory containing CSV files')
+    parser.add_argument('pickle_or_dir', help='Path to a pickle file or directory containing pickles')
+    parser.add_argument('input_path', help='Path to directory containing CSV files (joined.csv, channels.csv)')
     parser.add_argument('--output-dir', default='perfect_cube_viz', 
                        help='Output directory for visualizations (default: perfect_cube_viz)')
     parser.add_argument('--voxel-size', type=float, default=1.0,
                        help='Voxel size in mm (default: 1.0)')
+    parser.add_argument('--session-id', default=None,
+                       help='If provided and input is a directory, combine all pickles matching this session id into one plot')
     
     args = parser.parse_args()
     
     print("Perfect Cube Voxel Visualization")
     print("="*40)
-    print(f"Pickle file: {args.pickle_file}")
+    print(f"Pickle or dir: {args.pickle_or_dir}")
     print(f"Input path: {args.input_path}")
     print(f"Output directory: {args.output_dir}")
     print(f"Voxel size: {args.voxel_size}mm³")
@@ -387,28 +485,59 @@ def main():
         # Load coordinate lookup
         coord_lookup = load_coordinate_lookup(args.input_path)
         
-        # Process single pickle file
-        coordinates, probe_id, probe_color = process_single_pickle(args.pickle_file, coord_lookup)
-        
-        if coordinates is None:
-            print("Failed to process pickle file!")
-            return
-        
-        if not coordinates:
-            print("No channel coordinates found!")
-            return
-        
-        # Create voxel grid
-        voxel_grid, grid_info = create_voxel_grid(coordinates, args.voxel_size)
-        
-        # Print statistics
-        print_voxel_statistics(voxel_grid, grid_info, coordinates, probe_id)
-        
-        # Create visualizations
-        create_perfect_cube_plot(voxel_grid, grid_info, probe_id, probe_color, args.output_dir)
-        create_simple_cube_plot(voxel_grid, grid_info, probe_id, probe_color, args.output_dir)
-        
-        print(f"\nPerfect cube visualization completed! Check the '{args.output_dir}' directory for images.")
+        # If a directory is provided and session-id is set, combine all matching pickles
+        if os.path.isdir(args.pickle_or_dir) and args.session_id:
+            print(f"Combining all pickles for session {args.session_id}...")
+            # Discover pickles matching the session id pattern
+            all_files = [f for f in os.listdir(args.pickle_or_dir) if f.endswith('.pickle')]
+            matching = [os.path.join(args.pickle_or_dir, f) for f in all_files if f.startswith(f"{args.session_id}_")]
+            if not matching:
+                print(f"No pickles found for session {args.session_id} in {args.pickle_or_dir}")
+                return
+            print(f"Found {len(matching)} pickles for session {args.session_id}")
+
+            # First pass: collect all coordinates to establish a common grid
+            all_coords = []
+            per_probe_coords = {}
+            for pkl in matching:
+                coords, probe_id, _ = process_single_pickle(pkl, coord_lookup)
+                if coords is None or not coords:
+                    continue
+                per_probe_coords[probe_id] = coords
+                all_coords.extend(coords)
+            if not all_coords:
+                print("No coordinates found across pickles.")
+                return
+
+            # Build a common grid using all coordinates
+            common_grid, grid_info = create_voxel_grid(all_coords, args.voxel_size)
+
+            # For each probe, compute occupied voxels on the common grid
+            probe_to_voxels = {}
+            for probe_id, coords in per_probe_coords.items():
+                occupied = compute_occupied_voxels_for_coords(coords, grid_info)
+                probe_to_voxels[probe_id] = occupied
+
+            # Render combined perfect cubes
+            create_combined_perfect_cube_plot(probe_to_voxels, grid_info, args.output_dir, args.session_id)
+            print(f"\nCombined perfect cube visualization completed! Check the '{args.output_dir}' directory for images.")
+        else:
+            # Process a single pickle file path
+            if not os.path.isfile(args.pickle_or_dir):
+                print("Input is not a file. Provide a pickle file or a directory with --session-id.")
+                return
+            coordinates, probe_id, probe_color = process_single_pickle(args.pickle_or_dir, coord_lookup)
+            if coordinates is None:
+                print("Failed to process pickle file!")
+                return
+            if not coordinates:
+                print("No channel coordinates found!")
+                return
+            voxel_grid, grid_info = create_voxel_grid(coordinates, args.voxel_size)
+            print_voxel_statistics(voxel_grid, grid_info, coordinates, probe_id)
+            create_perfect_cube_plot(voxel_grid, grid_info, probe_id, probe_color, args.output_dir)
+            create_simple_cube_plot(voxel_grid, grid_info, probe_id, probe_color, args.output_dir)
+            print(f"\nPerfect cube visualization completed! Check the '{args.output_dir}' directory for images.")
         
     except Exception as e:
         print(f"Error: {e}")
