@@ -17,7 +17,6 @@ import os
 import sys
 import pickle
 import argparse
-import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
@@ -29,52 +28,25 @@ from collections import defaultdict
 import time
 import json
 
-def load_coordinate_lookup(input_path):
-    """Load and merge CSV files to create coordinate lookup."""
-    print("Loading coordinate data...")
+def extract_coordinates_from_label(label):
+    """Extract CCF coordinates from enriched label."""
+    if not isinstance(label, str):
+        return None
     
-    # Find CSV files in input path
-    joined_path = os.path.join(input_path, 'joined.csv')
-    channels_path = os.path.join(input_path, 'channels.csv')
+    parts = label.split('_')
+    if len(parts) < 9:
+        return None
     
-    if not os.path.exists(joined_path):
-        raise FileNotFoundError(f"joined.csv not found at {joined_path}")
-    if not os.path.exists(channels_path):
-        raise FileNotFoundError(f"channels.csv not found at {channels_path}")
-    
-    # Load CSV files
-    joined_df = pd.read_csv(joined_path)
-    channels_df = pd.read_csv(channels_path)
-    
-    print(f"Loaded joined.csv: {joined_df.shape}")
-    print(f"Loaded channels.csv: {channels_df.shape}")
-    
-    # Merge on probe_id
-    merged_df = pd.merge(
-        joined_df,
-        channels_df,
-        left_on='probe_id',
-        right_on='ecephys_probe_id',
-        how='inner'
-    )
-    
-    print(f"Merged data shape: {merged_df.shape}")
-    
-    # Create coordinate lookup - use channel-specific CCF coordinates from channels.csv
-    coord_lookup = {}
-    for _, row in merged_df.iterrows():
-        key = (str(row['session_id']), str(row['probe_id']), str(row['id']))
-        coord_lookup[key] = {
-            'ap': row['anterior_posterior_ccf_coordinate_y'],  # From channels.csv
-            'dv': row['dorsal_ventral_ccf_coordinate_y'],      # From channels.csv
-            'lr': row['left_right_ccf_coordinate_y'],          # From channels.csv
-            'probe_h': row['probe_horizontal_position'],
-            'probe_v': row['probe_vertical_position'],
-            'structure': row['ecephys_structure_acronym_y'] if 'ecephys_structure_acronym_y' in row else 'Unknown'
-        }
-    
-    print(f"Created coordinate lookup with {len(coord_lookup)} entries")
-    return coord_lookup
+    try:
+        # Last 5 parts should be coordinates: ap, dv, lr, probe_h, probe_v
+        ap = float(parts[-5])
+        dv = float(parts[-4])
+        lr = float(parts[-3])
+        probe_h = float(parts[-2])
+        probe_v = float(parts[-1])
+        return {'ap': ap, 'dv': dv, 'lr': lr, 'probe_h': probe_h, 'probe_v': probe_v}
+    except (ValueError, IndexError):
+        return None
 
 def extract_session_id_from_filename(filename):
     """Extract session ID from pickle filename."""
@@ -85,7 +57,7 @@ def extract_session_id_from_filename(filename):
 
 def process_single_pickle_file(args):
     """Process a single pickle file and extract channel coordinates."""
-    pickle_path, coord_lookup, voxel_size = args
+    pickle_path, voxel_size = args  # Removed coord_lookup parameter
     
     try:
         # Extract session ID from filename
@@ -100,38 +72,41 @@ def process_single_pickle_file(args):
         with open(pickle_path, 'rb') as f:
             data = pickle.load(f)
         
-        print(f"Loaded pickle file with {len(data['labels'])} labels")
+        print(f"Loaded pickle file with {len(data)} entries")
         
-        # Extract coordinates
+        # Extract coordinates directly from enriched labels
         coordinates = []
         probe_ids = set()
         
-        for entry in data['labels']:
+        for entry in data:
             try:
-                # Parse the label string
-                parts = entry.split('_')
-                if len(parts) >= 3:
-                    session_id_from_label = parts[0]
-                    probe_id = parts[1]
-                    channel_id = parts[2]
+                # Each entry is a tuple: (signal_array, enriched_label)
+                if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                    signal, label = entry[0], entry[1]
                     
-                    # Verify session ID matches filename
-                    if session_id_from_label != session_id:
-                        continue
-                    
-                    # Look up coordinates
-                    key = (session_id_from_label, probe_id, channel_id)
-                    if key in coord_lookup:
-                        coords = coord_lookup[key]
-                        coordinates.append({
-                            'ap': coords['ap'],
-                            'dv': coords['dv'],
-                            'lr': coords['lr'],
-                            'probe_id': probe_id,
-                            'channel_id': channel_id,
-                            'session_id': session_id_from_label
-                        })
-                        probe_ids.add(probe_id)
+                    # Extract coordinates directly from enriched label
+                    coords = extract_coordinates_from_label(label)
+                    if coords is not None:
+                        # Parse the label to get session, probe, channel info
+                        parts = label.split('_')
+                        if len(parts) >= 3:
+                            session_id_from_label = parts[0]
+                            channel_id = parts[1]
+                            probe_id = parts[2]
+                            
+                            # Verify session ID matches filename
+                            if session_id_from_label == session_id:
+                                coordinates.append({
+                                    'ap': coords['ap'],
+                                    'dv': coords['dv'],
+                                    'lr': coords['lr'],
+                                    'probe_id': probe_id,
+                                    'channel_id': channel_id,
+                                    'session_id': session_id_from_label,
+                                    'probe_h': coords['probe_h'],
+                                    'probe_v': coords['probe_v']
+                                })
+                                probe_ids.add(probe_id)
             except Exception as e:
                 continue
         
@@ -149,7 +124,7 @@ def process_single_pickle_file(args):
         print(f"Error processing {pickle_path}: {e}")
         return None
 
-def process_all_pickle_files(pickle_dir, coord_lookup, voxel_size, num_workers=8):
+def process_all_pickle_files(pickle_dir, voxel_size, num_workers=8, batch_size=None):
     """Process all pickle files in parallel."""
     print(f"Scanning for pickle files in {pickle_dir}...")
     
@@ -161,20 +136,43 @@ def process_all_pickle_files(pickle_dir, coord_lookup, voxel_size, num_workers=8
         print("No pickle files found!")
         return []
     
-    # Prepare arguments for multiprocessing
-    args_list = [(pf, coord_lookup, voxel_size) for pf in pickle_files]
+    # If batch_size is specified, process files in batches
+    if batch_size and batch_size < len(pickle_files):
+        print(f"Processing files in batches of {batch_size}")
+        all_results = []
+        
+        for i in range(0, len(pickle_files), batch_size):
+            batch_files = pickle_files[i:i + batch_size]
+            print(f"Processing batch {i//batch_size + 1}/{(len(pickle_files) + batch_size - 1)//batch_size} ({len(batch_files)} files)")
+            
+            # Prepare arguments for multiprocessing
+            args_list = [(pf, voxel_size) for pf in batch_files]
+            
+            # Process batch in parallel
+            with mp.Pool(num_workers) as pool:
+                batch_results = list(tqdm(pool.imap(process_single_pickle_file, args_list), 
+                                      total=len(batch_files), desc=f"Batch {i//batch_size + 1}"))
+            
+            # Filter out None results and add to all_results
+            valid_batch_results = [r for r in batch_results if r is not None]
+            all_results.extend(valid_batch_results)
+            print(f"Batch {i//batch_size + 1} completed: {len(valid_batch_results)} valid results")
+    else:
+        # Process all files at once (original behavior)
+        print(f"Processing all {len(pickle_files)} files at once")
+        args_list = [(pf, voxel_size) for pf in pickle_files]
+        
+        # Process files in parallel
+        print(f"Processing {len(pickle_files)} files with {num_workers} workers...")
+        with mp.Pool(num_workers) as pool:
+            results = list(tqdm(pool.imap(process_single_pickle_file, args_list), 
+                              total=len(pickle_files), desc="Processing files"))
+        
+        # Filter out None results
+        all_results = [r for r in results if r is not None]
     
-    # Process files in parallel
-    print(f"Processing {len(pickle_files)} files with {num_workers} workers...")
-    with mp.Pool(num_workers) as pool:
-        results = list(tqdm(pool.imap(process_single_pickle_file, args_list), 
-                          total=len(pickle_files), desc="Processing files"))
-    
-    # Filter out None results
-    valid_results = [r for r in results if r is not None]
-    print(f"Successfully processed {len(valid_results)} files")
-    
-    return valid_results
+    print(f"Successfully processed {len(all_results)} files total")
+    return all_results
 
 def create_voxel_grid(coordinates, voxel_size):
     """Create voxel grid and assign coordinates to voxels."""
@@ -185,27 +183,48 @@ def create_voxel_grid(coordinates, voxel_size):
     ap_coords = np.array([c['ap'] for c in coordinates])
     dv_coords = np.array([c['dv'] for c in coordinates])
     lr_coords = np.array([c['lr'] for c in coordinates])
+    probe_h_coords = np.array([c['probe_h'] for c in coordinates])
+    probe_v_coords = np.array([c['probe_v'] for c in coordinates])
+    
+    # Check if CCF coordinates have variation
+    ap_range = np.max(ap_coords) - np.min(ap_coords)
+    dv_range = np.max(dv_coords) - np.min(dv_coords)
+    lr_range = np.max(lr_coords) - np.min(lr_coords)
+    
+    # If CCF coordinates have no variation, use probe coordinates for spatial variation
+    if ap_range == 0 and dv_range == 0 and lr_range == 0:
+        print("CCF coordinates identical - using probe coordinates for spatial variation")
+        # Use probe coordinates: H for X, V for Y, LR for Z (even though LR is constant)
+        x_coords = probe_h_coords
+        y_coords = probe_v_coords
+        z_coords = lr_coords  # Keep LR as Z-axis
+    else:
+        print("Using CCF coordinates for spatial variation")
+        # Use CCF coordinates
+        x_coords = ap_coords
+        y_coords = dv_coords
+        z_coords = lr_coords
     
     # Calculate voxel grid dimensions
-    ap_min, ap_max = np.min(ap_coords), np.max(ap_coords)
-    dv_min, dv_max = np.min(dv_coords), np.max(dv_coords)
-    lr_min, lr_max = np.min(lr_coords), np.max(lr_coords)
+    x_min, x_max = np.min(x_coords), np.max(x_coords)
+    y_min, y_max = np.min(y_coords), np.max(y_coords)
+    z_min, z_max = np.min(z_coords), np.max(z_coords)
     
     # Create voxel grid
-    ap_voxels = np.arange(ap_min, ap_max + voxel_size, voxel_size)
-    dv_voxels = np.arange(dv_min, dv_max + voxel_size, voxel_size)
-    lr_voxels = np.arange(lr_min, lr_max + voxel_size, voxel_size)
+    x_voxels = np.arange(x_min, x_max + voxel_size, voxel_size)
+    y_voxels = np.arange(y_min, y_max + voxel_size, voxel_size)
+    z_voxels = np.arange(z_min, z_max + voxel_size, voxel_size)
     
     # Assign coordinates to voxels
     voxel_to_coords = defaultdict(list)
     voxel_to_session = {}
     
-    for coord in coordinates:
-        ap_idx = int((coord['ap'] - ap_min) / voxel_size)
-        dv_idx = int((coord['dv'] - dv_min) / voxel_size)
-        lr_idx = int((coord['lr'] - lr_min) / voxel_size)
+    for i, coord in enumerate(coordinates):
+        x_idx = int((x_coords[i] - x_min) / voxel_size)
+        y_idx = int((y_coords[i] - y_min) / voxel_size)
+        z_idx = int((z_coords[i] - z_min) / voxel_size)
         
-        voxel_key = (ap_idx, dv_idx, lr_idx)
+        voxel_key = (x_idx, y_idx, z_idx)
         voxel_to_coords[voxel_key].append(coord)
         voxel_to_session[voxel_key] = coord['session_id']  # Latest session wins
     
@@ -241,54 +260,121 @@ def create_perfect_cube(center, size, color, alpha=0.7):
     return Poly3DCollection(faces, facecolor=color, alpha=alpha, edgecolor='black', linewidth=0.1)
 
 def create_visualization(voxel_to_coords, voxel_to_session, voxel_size, output_path, 
-                        title, use_different_colors=True):
-    """Create 3D visualization with perfect cubes."""
+                        title, use_different_colors=True, use_probe_coords=False):
+    """Create 3D visualization with perfect cubes using the working method."""
     print(f"Creating visualization: {title}")
     
     # Get unique sessions for color mapping
     unique_sessions = list(set(voxel_to_session.values()))
     n_sessions = len(unique_sessions)
     
-    # Create color map
-    if use_different_colors and n_sessions > 1:
-        colors = plt.cm.tab20(np.linspace(0, 1, n_sessions))
-        session_to_color = {session: colors[i] for i, session in enumerate(unique_sessions)}
-    else:
-        # Use single color
-        session_to_color = {session: 'red' for session in unique_sessions}
-    
     # Create figure
-    fig = plt.figure(figsize=(15, 12))
+    fig = plt.figure(figsize=(20, 15))
     ax = fig.add_subplot(111, projection='3d')
     
-    # Create cubes
-    cubes = []
+    # Define colors for sessions - grayscale gradient
+    if n_sessions > 1:
+        # Different grayscale colors for different sessions
+        session_colors = plt.cm.Greys(np.linspace(0.3, 0.8, n_sessions))
+        session_to_color = {session: session_colors[i] for i, session in enumerate(unique_sessions)}
+    else:
+        # Single session gets one grayscale color
+        session_to_color = {unique_sessions[0]: plt.cm.Greys(0.6)}
+    
+    # Define the 8 vertices of a unit cube
+    unit_cube_vertices = np.array([
+        [0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],  # Bottom face
+        [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]   # Top face
+    ])
+    
+    # Define the 6 faces of the cube
+    cube_faces = [
+        [0, 1, 2, 3],  # Bottom face
+        [4, 5, 6, 7],  # Top face
+        [0, 1, 5, 4],  # Front face
+        [2, 3, 7, 6],  # Back face
+        [0, 3, 7, 4],  # Left face
+        [1, 2, 6, 5]   # Right face
+    ]
+    
+    # Create all cube faces
+    all_faces = []
+    all_colors = []
+    voxel_centers = []
+    
+    voxel_index = 0
     for voxel_key, coords in voxel_to_coords.items():
         if not coords:
             continue
         
-        # Calculate voxel center
-        ap_idx, dv_idx, lr_idx = voxel_key
-        center = (
-            ap_idx * voxel_size + voxel_size / 2,
-            dv_idx * voxel_size + voxel_size / 2,
-            lr_idx * voxel_size + voxel_size / 2
-        )
+        # Calculate voxel center (actual coordinates, not indices)
+        x_idx, y_idx, z_idx = voxel_key
         
-        # Get color for this voxel
-        session = voxel_to_session[voxel_key]
-        color = session_to_color[session]
+        # Get the actual coordinate ranges from the first coordinate
+        first_coord = coords[0]
+        if use_probe_coords:
+            # Use probe coordinates
+            x_min = min(c['probe_h'] for c in coords)
+            y_min = min(c['probe_v'] for c in coords)
+            z_min = min(c['lr'] for c in coords)
+            center = (
+                x_min + x_idx * voxel_size,
+                y_min + y_idx * voxel_size,
+                z_min + z_idx * voxel_size
+            )
+        else:
+            # Use CCF coordinates
+            x_min = min(c['ap'] for c in coords)
+            y_min = min(c['dv'] for c in coords)
+            z_min = min(c['lr'] for c in coords)
+            center = (
+                x_min + x_idx * voxel_size,
+                y_min + y_idx * voxel_size,
+                z_min + z_idx * voxel_size
+            )
         
-        # Create cube
-        cube = create_perfect_cube(center, voxel_size, color)
-        cubes.append(cube)
-        ax.add_collection3d(cube)
+        voxel_centers.append(center)
+        
+        # Scale and translate the unit cube
+        cube_vertices = unit_cube_vertices * voxel_size + np.array(center)
+        
+        # Add faces for this cube
+        for face in cube_faces:
+            face_vertices = cube_vertices[face]
+            all_faces.append(face_vertices)
+            # Get color based on session
+            session = voxel_to_session[voxel_key]
+            all_colors.append(session_to_color[session])
+        
+        voxel_index += 1
     
-    # Set axis labels and limits
-    ax.set_xlabel('Anterior-Posterior (μm)')
-    ax.set_ylabel('Dorsal-Ventral (μm)')
-    ax.set_zlabel('Left-Right (μm)')
-    ax.set_title(f'{title}\n{len(cubes)} voxels, {len(unique_sessions)} sessions')
+    # Create Poly3DCollection for all faces
+    if all_faces:
+        cube_collection = Poly3DCollection(all_faces, facecolor=all_colors, alpha=0.7, edgecolor='black', linewidth=0.5)
+        ax.add_collection3d(cube_collection)
+        
+        # Add scatter points for voxel centers with session colors
+        centers_array = np.array(voxel_centers)
+        scatter_colors = []
+        for voxel_key, coords in voxel_to_coords.items():
+            if coords:
+                session = voxel_to_session[voxel_key]
+                scatter_colors.append(session_to_color[session])
+        
+        ax.scatter(centers_array[:, 0], centers_array[:, 1], centers_array[:, 2], 
+                  c=scatter_colors, s=50, alpha=0.9, edgecolors='none')
+    
+    # Set axis labels based on coordinate system used
+    if use_probe_coords:
+        ax.set_xlabel('Probe Horizontal (μm)', fontsize=14)
+        ax.set_ylabel('Probe Vertical (μm)', fontsize=14)
+        ax.set_zlabel('Left-Right (μm)', fontsize=14)
+    else:
+        ax.set_xlabel('Anterior-Posterior (μm)', fontsize=14)
+        ax.set_ylabel('Dorsal-Ventral (μm)', fontsize=14)
+        ax.set_zlabel('Left-Right (μm)', fontsize=14)
+    
+    ax.set_title(f'{title}\n{len(voxel_centers)} voxels, {len(unique_sessions)} sessions', fontsize=16)
     
     # Set equal aspect ratio
     ax.set_box_aspect([1, 1, 1])
@@ -425,34 +511,25 @@ def print_statistics_summary(stats):
 
 def main():
     parser = argparse.ArgumentParser(description='Massive Session Visualization')
-    parser.add_argument('pickle_dir', help='Directory containing pickle files')
-    parser.add_argument('csv_dir', help='Directory containing CSV files')
+    parser.add_argument('pickle_dir', help='Directory containing enriched pickle files')
     parser.add_argument('--output-dir', default='massive_session_viz', 
                        help='Output directory for visualizations')
     parser.add_argument('--voxel-size', type=float, default=1.0, 
                        help='Voxel size in mm (default: 1.0)')
     parser.add_argument('--workers', type=int, default=8, 
                        help='Number of parallel workers (default: 8)')
-    parser.add_argument('--joined-csv', default='joined.csv', 
-                       help='Joined CSV filename (default: joined.csv)')
-    parser.add_argument('--channels-csv', default='channels.csv', 
-                       help='Channels CSV filename (default: channels.csv)')
+    parser.add_argument('--batch-size', type=int, default=None,
+                       help='Number of files to process in each batch (default: process all at once)')
     
     args = parser.parse_args()
     
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
     
-    # Load coordinate data
-    joined_csv_path = os.path.join(args.csv_dir, args.joined_csv)
-    channels_csv_path = os.path.join(args.csv_dir, args.channels_csv)
-    
-    coord_lookup = load_coordinate_data(joined_csv_path, channels_csv_path)
-    
-    # Process all pickle files
-    print(f"\nProcessing all pickle files in {args.pickle_dir}...")
-    all_results = process_all_pickle_files(args.pickle_dir, coord_lookup, 
-                                        args.voxel_size, args.workers)
+    # Process all pickle files (coordinates are already embedded in enriched labels)
+    print(f"\nProcessing all enriched pickle files in {args.pickle_dir}...")
+    all_results = process_all_pickle_files(args.pickle_dir, args.voxel_size, 
+                                        args.workers, args.batch_size)
     
     if not all_results:
         print("No valid results found!")
@@ -479,17 +556,20 @@ def main():
     # Create visualizations
     print("\nCreating visualizations...")
     
+    # Check if probe coordinates were used
+    use_probe_coords = len(set(c['ap'] for c in all_coordinates)) == 1 and len(set(c['dv'] for c in all_coordinates)) == 1 and len(set(c['lr'] for c in all_coordinates)) == 1
+    
     # Same color visualization
     same_color_path = os.path.join(args.output_dir, 'massive_viz_same_color.png')
     create_visualization(voxel_to_coords, voxel_to_session, args.voxel_size, 
                         same_color_path, 'Massive Visualization - Same Color', 
-                        use_different_colors=False)
+                        use_different_colors=False, use_probe_coords=use_probe_coords)
     
     # Different colors per session visualization
     diff_color_path = os.path.join(args.output_dir, 'massive_viz_different_colors.png')
     create_visualization(voxel_to_coords, voxel_to_session, args.voxel_size, 
                         diff_color_path, 'Massive Visualization - Different Colors Per Session', 
-                        use_different_colors=True)
+                        use_different_colors=True, use_probe_coords=use_probe_coords)
     
     print(f"\nVisualization complete! Output saved to {args.output_dir}")
     print(f"Files created:")
