@@ -296,17 +296,7 @@ def enrich_pickle_file(pickle_path, coord_lookup, batch_size=10000, num_workers=
         logger.info("Processing entries...")
         enriched_data, stats = process_entry_batch(data, coord_lookup)
         
-        # Print statistics
-        logger.info(f"Enrichment statistics:")
-        logger.info(f"  Total entries: {stats['total']}")
-        logger.info(f"  Successfully enriched: {stats['enriched']}")
-        logger.info(f"  Not found in lookup: {stats['not_found']}")
-        logger.info(f"  Parse errors: {stats['parse_error']}")
-        logger.info(f"  Invalid entries: {stats['invalid_entry']}")
-        
-        if stats['total'] > 0:
-            success_rate = stats['enriched'] / stats['total'] * 100
-            logger.info(f"  Success rate: {success_rate:.1f}%")
+        # Suppress detailed per-file statistics logging
         
         # Save enriched data
         logger.info("Saving enriched data...")
@@ -345,6 +335,14 @@ def process_single_pickle_file(args):
             }
 
         stats = enrich_pickle_file(pickle_path, coord_lookup, batch_size, num_workers)
+        if stats is None:
+            return {
+                'file': pickle_path,
+                'success': False,
+                'skipped': False,
+                'stats': None,
+                'error': 'enrichment returned None (see logs for details)'
+            }
         return {
             'file': pickle_path,
             'success': True,
@@ -467,23 +465,8 @@ def process_pickle_files(input_path, coord_lookup, num_workers=None, batch_size=
     # Calculate total time
     overall_stats['total_time'] = time.time() - overall_stats['start_time']
     
-    # Print comprehensive summary
-    logger.info("\n" + "=" * 60)
-    logger.info("OVERALL PROCESSING SUMMARY")
-    logger.info("=" * 60)
-    logger.info(f"Files processed successfully: {overall_stats['files_processed']}")
-    logger.info(f"Files failed: {overall_stats['files_failed']}")
-    logger.info(f"Files skipped (already enriched): {overall_stats['files_skipped']}")
-    logger.info(f"Total entries processed: {overall_stats['total_entries']}")
-    logger.info(f"Total entries enriched: {overall_stats['total_enriched']}")
-    logger.info(f"Total entries not found: {overall_stats['total_not_found']}")
-    logger.info(f"Total parse errors: {overall_stats['total_parse_errors']}")
-    logger.info(f"Total invalid entries: {overall_stats['total_invalid_entries']}")
-    logger.info(f"Total processing time: {overall_stats['total_time']:.2f}s")
-    
-    if overall_stats['total_entries'] > 0:
-        success_rate = overall_stats['total_enriched'] / overall_stats['total_entries'] * 100
-        logger.info(f"Overall success rate: {success_rate:.1f}%")
+    # Suppress verbose overall statistics logging (still save JSON summary below)
+    logger.info("Processing complete. Writing summary JSON...")
     
     # Save summary to JSON
     summary_file = f"enrichment_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
