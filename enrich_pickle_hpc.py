@@ -99,14 +99,14 @@ def load_coordinate_data(input_path, max_memory_gb=8):
         )
         logger.info(f"Merged data shape: {merged_df.shape}")
         
-        # Create coordinate lookup
+        # Create coordinate lookup using channels.csv coordinates (more accurate)
         coord_lookup = {}
         for _, row in merged_df.iterrows():
             key = (str(row['session_id']), str(row['probe_id']), str(row['id']))
             coord_lookup[key] = {
-                'ap': row['anterior_posterior_ccf_coordinate_x'],
-                'dv': row['dorsal_ventral_ccf_coordinate_x'],
-                'lr': row['left_right_ccf_coordinate_x'],
+                'ap': row['anterior_posterior_ccf_coordinate_y'],  # Use channels.csv coordinates
+                'dv': row['dorsal_ventral_ccf_coordinate_y'],      # Use channels.csv coordinates
+                'lr': row['left_right_ccf_coordinate_y'],          # Use channels.csv coordinates
                 'probe_h': row['probe_horizontal_position'],
                 'probe_v': row['probe_vertical_position']
             }

@@ -95,7 +95,22 @@ def check_pickle_enrichment(pickle_path: str, sample_size: int = 50) -> tuple[bo
         # Check if CCF coordinates have variation
         unique_triplets = set(coord_triplets)
         if len(unique_triplets) <= 1 and len(coord_triplets) > 0:
-            return False, "all CCF coordinates identical"
+            # Check if this is a single channel/probe case (which is valid)
+            channel_ids = set()
+            probe_ids = set()
+            for i in range(min(n, 100)):  # Check first 100 entries
+                entry = data[i]
+                if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                    label = entry[1]
+                    parts = label.split('_')
+                    if len(parts) >= 4:
+                        channel_ids.add(parts[3])  # channel_id
+                        probe_ids.add(parts[2])   # probe_id
+            
+            if len(channel_ids) == 1 and len(probe_ids) == 1:
+                return True, "single channel/probe (valid)"
+            else:
+                return False, "all CCF coordinates identical"
         
         return True, "properly enriched"
         
@@ -548,6 +563,142 @@ def generate_statistics(all_results, voxel_to_coords, voxel_to_session):
     
     return stats
 
+def create_voxel_frequency_histogram(voxel_to_coords, voxel_to_session, output_dir):
+    """Create histogram showing how many sessions hit each voxel."""
+    print("Creating voxel frequency histogram...")
+    
+    # Count sessions per voxel
+    voxel_session_counts = defaultdict(set)
+    for voxel_key, coords in voxel_to_coords.items():
+        if coords:
+            session = voxel_to_session[voxel_key]
+            voxel_session_counts[voxel_key].add(session)
+    
+    # Count frequency of each voxel (how many sessions hit it)
+    voxel_frequencies = [len(sessions) for sessions in voxel_session_counts.values()]
+    
+    if not voxel_frequencies:
+        print("No voxel frequency data to plot")
+        return
+    
+    # Create histogram
+    plt.figure(figsize=(12, 8))
+    
+    # Plot histogram
+    plt.hist(voxel_frequencies, bins=range(1, max(voxel_frequencies) + 2), 
+             alpha=0.7, edgecolor='black', linewidth=0.5)
+    
+    plt.xlabel('Number of Sessions per Voxel', fontsize=12)
+    plt.ylabel('Number of Voxels', fontsize=12)
+    plt.title('Voxel Frequency Distribution\n(How many sessions hit each voxel)', fontsize=14)
+    plt.grid(True, alpha=0.3)
+    
+    # Add statistics text
+    mean_freq = np.mean(voxel_frequencies)
+    median_freq = np.median(voxel_frequencies)
+    max_freq = max(voxel_frequencies)
+    total_voxels = len(voxel_frequencies)
+    
+    stats_text = f'Total voxels: {total_voxels}\nMean sessions/voxel: {mean_freq:.1f}\nMedian sessions/voxel: {median_freq:.1f}\nMax sessions/voxel: {max_freq}'
+    plt.text(0.7, 0.7, stats_text, transform=plt.gca().transAxes, 
+             bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgray", alpha=0.8),
+             fontsize=10, verticalalignment='top')
+    
+    plt.tight_layout()
+    
+    # Save histogram
+    hist_path = os.path.join(output_dir, 'voxel_frequency_histogram.png')
+    plt.savefig(hist_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    print(f"Voxel frequency histogram saved to {hist_path}")
+    
+    # Create detailed frequency statistics
+    freq_stats = {
+        'total_voxels': total_voxels,
+        'mean_sessions_per_voxel': float(mean_freq),
+        'median_sessions_per_voxel': float(median_freq),
+        'max_sessions_per_voxel': max_freq,
+        'min_sessions_per_voxel': min(voxel_frequencies),
+        'std_sessions_per_voxel': float(np.std(voxel_frequencies)),
+        'frequency_distribution': {
+            str(i): int(np.sum(np.array(voxel_frequencies) == i)) 
+            for i in range(1, max_freq + 1)
+        }
+    }
+    
+    return freq_stats
+
+def create_spatial_coverage_heatmap(voxel_to_coords, voxel_to_session, output_dir, voxel_size):
+    """Create 2D heatmap showing spatial coverage density."""
+    print("Creating spatial coverage heatmap...")
+    
+    if not voxel_to_coords:
+        print("No voxel data for heatmap")
+        return
+    
+    # Extract coordinates and session counts
+    voxel_session_counts = defaultdict(set)
+    for voxel_key, coords in voxel_to_coords.items():
+        if coords:
+            session = voxel_to_session[voxel_key]
+            voxel_session_counts[voxel_key].add(session)
+    
+    # Get coordinate ranges
+    all_coords = []
+    for coords in voxel_to_coords.values():
+        if coords:
+            all_coords.extend(coords)
+    
+    if not all_coords:
+        print("No coordinate data for heatmap")
+        return
+    
+    ap_coords = [c['ap'] for c in all_coords]
+    dv_coords = [c['dv'] for c in all_coords]
+    
+    # Create 2D grid
+    ap_min, ap_max = min(ap_coords), max(ap_coords)
+    dv_min, dv_max = min(dv_coords), max(dv_coords)
+    
+    # Create grid
+    ap_bins = np.arange(ap_min, ap_max + voxel_size, voxel_size)
+    dv_bins = np.arange(dv_min, dv_max + voxel_size, voxel_size)
+    
+    # Count sessions per grid cell
+    grid_counts = np.zeros((len(dv_bins)-1, len(ap_bins)-1))
+    
+    for voxel_key, sessions in voxel_session_counts.items():
+        if sessions:
+            # Get voxel center coordinates
+            x_idx, y_idx, z_idx = voxel_key
+            # Find corresponding grid cell
+            ap_idx = int((ap_coords[0] - ap_min) / voxel_size)
+            dv_idx = int((dv_coords[0] - dv_min) / voxel_size)
+            
+            if 0 <= ap_idx < len(ap_bins)-1 and 0 <= dv_idx < len(dv_bins)-1:
+                grid_counts[dv_idx, ap_idx] = len(sessions)
+    
+    # Create heatmap
+    plt.figure(figsize=(15, 10))
+    
+    im = plt.imshow(grid_counts, cmap='hot', aspect='auto', origin='lower',
+                    extent=[ap_min, ap_max, dv_min, dv_max])
+    
+    plt.colorbar(im, label='Number of Sessions')
+    plt.xlabel('Anterior-Posterior (μm)', fontsize=12)
+    plt.ylabel('Dorsal-Ventral (μm)', fontsize=12)
+    plt.title('Spatial Coverage Heatmap\n(Number of sessions per voxel)', fontsize=14)
+    
+    plt.tight_layout()
+    
+    # Save heatmap
+    heatmap_path = os.path.join(output_dir, 'spatial_coverage_heatmap.png')
+    plt.savefig(heatmap_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    print(f"Spatial coverage heatmap saved to {heatmap_path}")
+
 def save_statistics(stats, output_dir):
     """Save statistics to JSON file."""
     stats_path = os.path.join(output_dir, 'massive_viz_statistics.json')
@@ -656,8 +807,18 @@ def main():
     print_statistics_summary(stats)
     save_statistics(stats, args.output_dir)
     
+    # Create voxel frequency analysis
+    print("\nCreating voxel frequency analysis...")
+    freq_stats = create_voxel_frequency_histogram(voxel_to_coords, voxel_to_session, args.output_dir)
+    create_spatial_coverage_heatmap(voxel_to_coords, voxel_to_session, args.output_dir, args.voxel_size)
+    
+    # Add frequency stats to main statistics
+    if freq_stats:
+        stats['voxel_frequency_stats'] = freq_stats
+        save_statistics(stats, args.output_dir)  # Save updated stats
+    
     # Create visualizations
-    print("\nCreating visualizations...")
+    print("\nCreating 3D visualizations...")
     
     # Check if probe coordinates were used
     use_probe_coords = len(set(c['ap'] for c in all_coordinates)) == 1 and len(set(c['dv'] for c in all_coordinates)) == 1 and len(set(c['lr'] for c in all_coordinates)) == 1

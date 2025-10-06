@@ -1,0 +1,39 @@
+{
+  "total_files_processed": 1,
+  "total_sessions": 1,
+  "total_probes": 1,
+  "total_channels": 296884,
+  "total_voxels": 92,
+  "voxels_with_channels": 92,
+  "session_breakdown": {
+    "847657808": {
+      "files": 1,
+      "probes": 1,
+      "channels": 296884
+    }
+  },
+  "probe_breakdown": {
+    "848037568": {
+      "sessions": 1,
+      "channels": 296884
+    }
+  },
+  "voxel_density_stats": {
+    "min_channels_per_voxel": 3227,
+    "max_channels_per_voxel": 3227,
+    "mean_channels_per_voxel": 3227.0,
+    "median_channels_per_voxel": 3227.0,
+    "std_channels_per_voxel": 0.0
+  },
+  "voxel_frequency_stats": {
+    "total_voxels": 92,
+    "mean_sessions_per_voxel": 1.0,
+    "median_sessions_per_voxel": 1.0,
+    "max_sessions_per_voxel": 1,
+    "min_sessions_per_voxel": 1,
+    "std_sessions_per_voxel": 0.0,
+    "frequency_distribution": {
+      "1": 92
+    }
+  }
+}
