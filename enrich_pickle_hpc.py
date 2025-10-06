@@ -287,8 +287,13 @@ def enrich_pickle_file(pickle_path, coord_lookup, batch_size=10000, num_workers=
         
         # Load pickle file
         logger.info("Loading pickle file...")
-        with open(pickle_path, 'rb') as f:
-            data = pickle.load(f)
+        try:
+            with open(pickle_path, 'rb') as f:
+                data = pickle.load(f)
+        except EOFError as e:
+            # Surface EOFError so caller can classify this file as bad/corrupted
+            logger.error("EOFError while reading pickle (likely empty/corrupted)")
+            raise
         
         logger.info(f"Loaded {len(data)} entries")
         
@@ -303,9 +308,36 @@ def enrich_pickle_file(pickle_path, coord_lookup, batch_size=10000, num_workers=
         with open(pickle_path, 'wb') as f:
             pickle.dump(enriched_data, f)
         
+        # Post-enrichment verification: ensure channels do not all share the same CCF
+        try:
+            with open(pickle_path, 'rb') as f:
+                verify_data = pickle.load(f)
+            channel_to_coord = {}
+            for entry in verify_data[:min(10000, len(verify_data))]:
+                if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                    label = entry[1]
+                    parts = str(label).split('_')
+                    if len(parts) >= 9:
+                        chan = parts[3]
+                        try:
+                            ap, dv, lr = float(parts[-5]), float(parts[-4]), float(parts[-3])
+                            if chan not in channel_to_coord:
+                                channel_to_coord[chan] = (ap, dv, lr)
+                        except Exception:
+                            continue
+            unique_coords = len(set(channel_to_coord.values())) if channel_to_coord else 0
+            stats['channels_seen'] = len(channel_to_coord)
+            stats['unique_channel_coords'] = unique_coords
+            stats['ccf_identical'] = stats['channels_seen'] > 1 and unique_coords <= 1
+            if stats['ccf_identical']:
+                logger.warning("Post-check: all channels share identical CCF coordinates")
+        except Exception:
+            # Do not fail the run if verification has issues
+            pass
+
         logger.info(f"Enrichment completed in {time.time() - start_time:.2f}s")
         logger.info(f"Saved enriched data to: {pickle_path}")
-        
+
         return stats
         
     except Exception as e:
@@ -355,7 +387,8 @@ def process_single_pickle_file(args):
             'file': pickle_path,
             'success': False,
             'stats': None,
-            'error': str(e)
+            'error': str(e),
+            'bad_file': ('Ran out of input' in str(e))
         }
 
 def find_pickle_files(input_path):
@@ -411,6 +444,7 @@ def process_pickle_files(input_path, coord_lookup, num_workers=None, batch_size=
         'files_processed': 0,
         'files_failed': 0,
         'files_skipped': 0,
+        'bad_files': [],
         'total_entries': 0,
         'total_enriched': 0,
         'total_not_found': 0,
@@ -436,9 +470,14 @@ def process_pickle_files(input_path, coord_lookup, num_workers=None, batch_size=
                 overall_stats['total_not_found'] += stats['not_found']
                 overall_stats['total_parse_errors'] += stats['parse_error']
                 overall_stats['total_invalid_entries'] += stats['invalid_entry']
+                # Track files whose channels remained identical after enrichment
+                if stats.get('ccf_identical'):
+                    overall_stats.setdefault('postcheck_issues', []).append(result['file'])
             else:
                 logger.error(f"Error processing {pickle_path}: {result['error']}")
                 overall_stats['files_failed'] += 1
+                if result.get('bad_file'):
+                    overall_stats['bad_files'].append({'file': pickle_path, 'reason': 'EOFError: Ran out of input'})
     else:
         logger.info("Processing files in parallel...")
         
@@ -458,9 +497,13 @@ def process_pickle_files(input_path, coord_lookup, num_workers=None, batch_size=
                         overall_stats['total_not_found'] += stats['not_found']
                         overall_stats['total_parse_errors'] += stats['parse_error']
                         overall_stats['total_invalid_entries'] += stats['invalid_entry']
+                        if stats.get('ccf_identical'):
+                            overall_stats.setdefault('postcheck_issues', []).append(result['file'])
                     else:
                         overall_stats['files_failed'] += 1
                         logger.error(f"Error processing {result['file']}: {result['error']}")
+                        if result.get('bad_file'):
+                            overall_stats['bad_files'].append({'file': result['file'], 'reason': 'EOFError: Ran out of input'})
     
     # Calculate total time
     overall_stats['total_time'] = time.time() - overall_stats['start_time']
@@ -473,6 +516,18 @@ def process_pickle_files(input_path, coord_lookup, num_workers=None, batch_size=
     with open(summary_file, 'w') as f:
         json.dump(overall_stats, f, indent=2)
     logger.info(f"Summary saved to: {summary_file}")
+
+    # Save bad files (EOF/corrupt) to a separate JSON for quick triage
+    if overall_stats['bad_files']:
+        bad_file_path = f"bad_files_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        with open(bad_file_path, 'w') as bf:
+            json.dump(overall_stats['bad_files'], bf, indent=2)
+        logger.info(f"Bad files list saved to: {bad_file_path}")
+
+    # Report any files that still have identical channel CCFs after enrichment
+    if overall_stats.get('postcheck_issues'):
+        logger.warning("Some files appear to have identical CCF across channels after enrichment")
+        logger.warning("Files: " + ", ".join(overall_stats['postcheck_issues']))
     
     logger.info("Processing completed successfully!")
 
