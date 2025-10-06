@@ -28,6 +28,80 @@ from collections import defaultdict
 import time
 import json
 
+def _looks_like_number(s: str) -> bool:
+    try:
+        float(s)
+        return True
+    except Exception:
+        return False
+
+def is_label_enriched(label: str) -> bool:
+    """Check if a label has proper enrichment with coordinates."""
+    if not isinstance(label, str):
+        return False
+    parts = label.split('_')
+    if len(parts) < 9:
+        return False
+    tail = parts[-5:]
+    return all(_looks_like_number(x) for x in tail)
+
+def _extract_enriched_coords(label: str):
+    """Return (ap, dv, lr, probe_h, probe_v) as floats if enriched, else None."""
+    if not is_label_enriched(label):
+        return None
+    parts = label.split('_')
+    try:
+        ap, dv, lr, ph, pv = map(float, parts[-5:])
+        return (ap, dv, lr, ph, pv)
+    except Exception:
+        return None
+
+def check_pickle_enrichment(pickle_path: str, sample_size: int = 50) -> tuple[bool, str]:
+    """Check if pickle file is properly enriched.
+    Returns: (is_enriched, reason)
+    """
+    try:
+        with open(pickle_path, 'rb') as f:
+            data = pickle.load(f)
+        
+        if not isinstance(data, (list, tuple)) or len(data) == 0:
+            return False, "empty or malformed data"
+        
+        n = min(len(data), sample_size)
+        checked = 0
+        enriched_count = 0
+        coord_triplets = []
+        
+        for i in range(n):
+            entry = data[i]
+            if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                label = entry[1]
+                checked += 1
+                if is_label_enriched(label):
+                    enriched_count += 1
+                    coords = _extract_enriched_coords(label)
+                    if coords is not None:
+                        ap, dv, lr, _, _ = coords
+                        coord_triplets.append((ap, dv, lr))
+        
+        if checked == 0:
+            return False, "no valid entries found"
+        
+        enrichment_rate = enriched_count / checked
+        
+        if enrichment_rate < 0.9:
+            return False, f"only {enrichment_rate:.1%} of labels enriched"
+        
+        # Check if CCF coordinates have variation
+        unique_triplets = set(coord_triplets)
+        if len(unique_triplets) <= 1 and len(coord_triplets) > 0:
+            return False, "all CCF coordinates identical"
+        
+        return True, "properly enriched"
+        
+    except Exception as e:
+        return False, f"error checking file: {e}"
+
 def extract_coordinates_from_label(label):
     """Extract CCF coordinates from enriched label."""
     if not isinstance(label, str):
@@ -135,6 +209,35 @@ def process_all_pickle_files(pickle_dir, voxel_size, num_workers=8, batch_size=N
     if not pickle_files:
         print("No pickle files found!")
         return []
+    
+    # Check enrichment status of all files first
+    print("Checking enrichment status of pickle files...")
+    enriched_files = []
+    unenriched_files = []
+    
+    for pickle_file in pickle_files:
+        is_enriched, reason = check_pickle_enrichment(pickle_file)
+        if is_enriched:
+            enriched_files.append(pickle_file)
+        else:
+            unenriched_files.append((pickle_file, reason))
+    
+    print(f"Enrichment check complete:")
+    print(f"  Properly enriched files: {len(enriched_files)}")
+    print(f"  Unenriched/problematic files: {len(unenriched_files)}")
+    
+    if unenriched_files:
+        print("\nUnenriched/problematic files:")
+        for file_path, reason in unenriched_files:
+            print(f"  {os.path.basename(file_path)}: {reason}")
+        print()
+    
+    if not enriched_files:
+        print("No properly enriched files found! Please run enrichment first.")
+        return []
+    
+    # Use only enriched files for processing
+    pickle_files = enriched_files
     
     # If batch_size is specified, process files in batches
     if batch_size and batch_size < len(pickle_files):
