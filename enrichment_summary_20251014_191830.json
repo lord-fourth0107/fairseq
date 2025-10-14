@@ -1,0 +1,13 @@
+{
+  "files_processed": 1,
+  "files_failed": 0,
+  "files_skipped": 0,
+  "bad_files": [],
+  "total_entries": 296884,
+  "total_enriched": 296884,
+  "total_not_found": 0,
+  "total_parse_errors": 0,
+  "total_invalid_entries": 0,
+  "start_time": 1760483889.968864,
+  "total_time": 20.71314787864685
+}
