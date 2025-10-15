@@ -89,7 +89,7 @@ def validate_pickle_file_serial(pickle_path: str):
         total_entries = len(data)
         enriched_entries = 0
         channel_to_coords = {}
-        coord_to_channels = defaultdict(list)
+        coord_to_channels = defaultdict(set)  # Use set to avoid duplicate channel entries
         issues = []
         
         # Process each entry serially
@@ -106,8 +106,14 @@ def validate_pickle_file_serial(pickle_path: str):
                         # Extract CCF coordinates
                         ccf_coords = extract_ccf_coordinates(label)
                         if ccf_coords:
-                            channel_to_coords[channel_id] = ccf_coords
-                            coord_to_channels[ccf_coords].append(channel_id)
+                            # Store channel to coordinates mapping
+                            if channel_id in channel_to_coords:
+                                # Check if this channel already has different coordinates
+                                if channel_to_coords[channel_id] != ccf_coords:
+                                    issues.append(f"Channel {channel_id}: Has multiple different CCF coordinates")
+                            else:
+                                channel_to_coords[channel_id] = ccf_coords
+                                coord_to_channels[ccf_coords].add(channel_id)
                         else:
                             issues.append(f"Channel {channel_id}: Could not extract CCF coordinates")
                     else:
@@ -115,13 +121,13 @@ def validate_pickle_file_serial(pickle_path: str):
                 else:
                     issues.append(f"Entry {i}: Label not enriched - {label}")
         
-        # Check for duplicate coordinates
+        # Check for duplicate coordinates (only flag actual duplicates)
         duplicate_coords = []
         for coords, channels in coord_to_channels.items():
-            if len(channels) > 1:
+            if len(channels) > 1:  # Only flag if multiple channels share same coordinates
                 duplicate_coords.append({
                     'coordinates': coords,
-                    'channels': channels,
+                    'channels': list(channels),
                     'count': len(channels)
                 })
         
