@@ -2,14 +2,15 @@
 #SBATCH --job-name=pickle_enrichment
 #SBATCH --output=enrichment_%j.out
 #SBATCH --error=enrichment_%j.err
-#SBATCH --time=24:00:00
-#SBATCH --partition=general
+#SBATCH --time=48:00:00
+#SBATCH --partition=gpu
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=32
-#SBATCH --mem=64G
+#SBATCH --cpus-per-task=64
+#SBATCH --mem=128G
+#SBATCH --gres=gpu:1
 #SBATCH --mail-type=BEGIN,END,FAIL
-#SBATCH --mail-user=your_email@domain.com
+#SBATCH --mail-user=uttamsingh@example.com
 
 # HPC Pickle File Enrichment Job Script
 # This script runs the HPC-optimized pickle enrichment process
@@ -26,19 +27,20 @@ echo "=========================================="
 
 # Load required modules (adjust based on your HPC cluster)
 # Uncomment and modify these lines based on your cluster's module system
-# module load python/3.9
-# module load pandas
-# module load numpy
+module load python/3.9
+module load cuda/11.8
+module load gcc/9.3.0
+module load openmpi/4.1.0
 
 # Set up environment
 export PYTHONPATH="${PYTHONPATH}:$(pwd)"
 export OMP_NUM_THREADS=1  # Prevent OpenMP conflicts with multiprocessing
 
 # Configuration variables
-INPUT_DIR="/path/to/your/pickle/files"  # CHANGE THIS PATH
-WORKERS=32  # Adjust based on SLURM_CPUS_PER_TASK
-BATCH_SIZE=5000  # Adjust based on memory requirements
-MAX_MEMORY=16  # GB, adjust based on SLURM_MEM_PER_NODE
+INPUT_DIR="/path/to/your/pickle/files"  # CHANGE THIS PATH TO YOUR ACTUAL DATA DIRECTORY
+WORKERS=64  # Adjust based on SLURM_CPUS_PER_TASK
+BATCH_SIZE=10000  # Adjust based on memory requirements
+MAX_MEMORY=32  # GB, adjust based on SLURM_MEM_PER_NODE
 
 # Validate input directory
 if [ ! -d "$INPUT_DIR" ]; then
