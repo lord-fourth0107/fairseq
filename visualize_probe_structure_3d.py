@@ -521,21 +521,19 @@ def create_session_probe_visualization(session_probe_coords, output_dir):
     
     logger.info(f"Creating individual visualizations for {len(session_probe_coords)} session-probe combinations")
     
-    # Create a grid of subplots
-    n_combinations = len(session_probe_coords)
-    n_cols = min(4, n_combinations)
-    n_rows = (n_combinations + n_cols - 1) // n_cols
+    # Limit to first 20 combinations to avoid image size issues
+    limited_combinations = dict(list(session_probe_coords.items())[:20])
+    logger.info(f"Showing first 20 session-probe combinations to avoid image size limits")
     
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(5*n_cols, 4*n_rows))
-    if n_rows == 1:
-        axes = [axes] if n_cols == 1 else axes
-    else:
-        axes = axes.flatten()
+    # Create a grid of subplots (4x5 = 20)
+    n_combinations = len(limited_combinations)
+    n_cols = 4
+    n_rows = 5
     
-    for idx, ((session_id, probe_id), coords) in enumerate(session_probe_coords.items()):
-        if idx >= len(axes):
-            break
-            
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(20, 25), subplot_kw={'projection': '3d'})
+    axes = axes.flatten()
+    
+    for idx, ((session_id, probe_id), coords) in enumerate(limited_combinations.items()):
         ax = axes[idx]
         
         # Extract coordinates
@@ -544,22 +542,55 @@ def create_session_probe_visualization(session_probe_coords, output_dir):
         z_coords = [coord[2] for coord in coords]
         
         # Create 3D scatter plot
-        ax = fig.add_subplot(n_rows, n_cols, idx+1, projection='3d')
-        ax.scatter(x_coords, y_coords, z_coords, s=20, alpha=0.7)
+        ax.scatter(x_coords, y_coords, z_coords, s=10, alpha=0.7)
         
         ax.set_xlabel('AP')
         ax.set_ylabel('DV')
         ax.set_zlabel('LR')
-        ax.set_title(f'Session {session_id}\nProbe {probe_id}\n({len(coords)} channels)')
+        ax.set_title(f'Session {session_id}\nProbe {probe_id}\n({len(coords)} channels)', fontsize=8)
     
     # Hide unused subplots
-    for idx in range(len(session_probe_coords), len(axes)):
+    for idx in range(n_combinations, len(axes)):
         axes[idx].set_visible(False)
     
     plt.tight_layout()
-    output_file = os.path.join(output_dir, f"individual_probes_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
-    plt.savefig(output_file, dpi=300, bbox_inches='tight')
-    logger.info(f"Individual probe visualizations saved to: {output_file}")
+    output_file = os.path.join(output_dir, f"individual_probes_sample_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
+    plt.savefig(output_file, dpi=150, bbox_inches='tight')
+    logger.info(f"Individual probe visualizations (sample) saved to: {output_file}")
+    plt.close()
+    
+    # Also create a summary visualization showing all probes in one plot
+    logger.info("Creating summary visualization with all probes...")
+    fig = plt.figure(figsize=(15, 12))
+    ax = fig.add_subplot(111, projection='3d')
+    
+    # Color map for different session-probe combinations
+    colors = plt.cm.tab20(np.linspace(0, 1, min(20, len(session_probe_coords))))
+    
+    for idx, ((session_id, probe_id), coords) in enumerate(session_probe_coords.items()):
+        if idx >= 20:  # Limit to 20 colors
+            break
+            
+        x_coords = [coord[0] for coord in coords]
+        y_coords = [coord[1] for coord in coords]
+        z_coords = [coord[2] for coord in coords]
+        
+        ax.scatter(x_coords, y_coords, z_coords, s=5, alpha=0.6, 
+                  c=[colors[idx]], label=f'{session_id}_{probe_id}')
+    
+    ax.set_xlabel('Anterior-Posterior (CCF coordinates)')
+    ax.set_ylabel('Dorsal-Ventral (CCF coordinates)')
+    ax.set_zlabel('Left-Right (CCF coordinates)')
+    ax.set_title('All Probe Structures Overlaid\n(First 20 session-probe combinations)')
+    
+    # Add legend (but limit to avoid clutter)
+    if len(session_probe_coords) <= 20:
+        ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
+    
+    plt.tight_layout()
+    output_file_summary = os.path.join(output_dir, f"all_probes_overlay_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
+    plt.savefig(output_file_summary, dpi=150, bbox_inches='tight')
+    logger.info(f"All probes overlay visualization saved to: {output_file_summary}")
     plt.close()
 
 def save_voxel_data(voxel_counts, session_probe_coords, output_dir):
