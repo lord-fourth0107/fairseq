@@ -597,11 +597,13 @@ def save_voxel_data(voxel_counts, session_probe_coords, output_dir):
     """Save voxel data for further analysis."""
     logger = logging.getLogger(__name__)
     
-    # Save voxel counts
+    # Save voxel counts - convert tuple keys to string format for JSON serialization
+    voxel_counts_json = {f"{x}_{y}_{z}": count for (x, y, z), count in voxel_counts.items()}
+    
     voxel_data = {
         'voxel_size_mm': 1.0,
         'total_voxels': len(voxel_counts),
-        'voxel_counts': dict(voxel_counts),
+        'voxel_counts': voxel_counts_json,
         'session_probe_coords': {f"{session}_{probe}": coords for (session, probe), coords in session_probe_coords.items()},
         'summary': {
             'total_coordinates': sum(voxel_counts.values()),
