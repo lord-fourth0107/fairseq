@@ -270,11 +270,7 @@ def create_multi_channel_cube_visualization(voxel_to_channels, grid_info, output
     fig = plt.figure(figsize=(20, 15))
     ax = fig.add_subplot(111, projection='3d')
     
-    # Collect all cubes and their colors
-    all_cubes = []
-    all_colors = []
-    all_alphas = []
-    
+    # Process each voxel and create individual cube collections
     voxel_size_um = grid_info['voxel_size_um']
     
     # Process each voxel
@@ -301,19 +297,18 @@ def create_multi_channel_cube_visualization(voxel_to_channels, grid_info, output
         # Determine alpha based on channel count (more channels = more opaque)
         alpha = min(0.3 + (channel_count - 1) * 0.1, 0.9)
         
-        # Add faces for this cube
+        # Create cube faces
+        cube_faces = []
         for face in faces:
             face_vertices = vertices[face]
-            all_cubes.append(face_vertices)
-            all_colors.append(rgb_color)
-            all_alphas.append(alpha)
+            cube_faces.append(face_vertices)
+        
+        # Create individual Poly3DCollection for this cube
+        cube_collection = Poly3DCollection(cube_faces, facecolor=rgb_color, alpha=alpha, 
+                                         edgecolor='black', linewidth=0.1)
+        ax.add_collection3d(cube_collection)
     
-    logger.info(f"Created {len(all_cubes)} cube faces")
-    
-    # Create Poly3DCollection for all faces
-    cube_collection = Poly3DCollection(all_cubes, facecolor=all_colors, alpha=all_alphas, 
-                                     edgecolor='black', linewidth=0.1)
-    ax.add_collection3d(cube_collection)
+    logger.info(f"Created {len(voxel_to_channels)} cubes")
     
     # Set labels and title
     ax.set_xlabel('Anterior-Posterior (μm)', fontsize=14)
