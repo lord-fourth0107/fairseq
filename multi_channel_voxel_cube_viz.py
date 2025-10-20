@@ -102,7 +102,8 @@ def collect_all_coordinates(pickle_dir, voxel_size=1.0):
         return None, None, None
     
     # Data structures for voxelization
-    voxel_to_channels = defaultdict(list)  # (voxel_x, voxel_y, voxel_z) -> list of channel info
+    voxel_to_channels = defaultdict(set)  # (voxel_x, voxel_y, voxel_z) -> set of unique channel keys
+    voxel_to_channel_info = defaultdict(list)  # (voxel_x, voxel_y, voxel_z) -> list of channel info
     session_probe_coords = defaultdict(list)  # (session_id, probe_id) -> list of coords
     all_coords = []  # All coordinates for bounds calculation
     
@@ -117,6 +118,8 @@ def collect_all_coordinates(pickle_dir, voxel_size=1.0):
             logger.info(f"Processing {filename}: {len(data)} entries")
             
             file_channels = 0
+            seen_channels_in_file = set()  # Track unique channels per file
+            
             for entry in data:
                 if isinstance(entry, (list, tuple)) and len(entry) >= 2:
                     signal, label = entry[0], entry[1]
@@ -136,27 +139,40 @@ def collect_all_coordinates(pickle_dir, voxel_size=1.0):
                             
                             voxel_key = (voxel_x, voxel_y, voxel_z)
                             
-                            # Store channel information
+                            # Create unique channel key for deduplication
                             session_probe_info = extract_session_probe_info(label)
-                            channel_info = {
-                                'coordinates': ccf_coords,
-                                'session_id': session_probe_info[0] if session_probe_info else 'unknown',
-                                'probe_id': session_probe_info[1] if session_probe_info else 'unknown',
-                                'filename': filename
-                            }
-                            
-                            voxel_to_channels[voxel_key].append(channel_info)
-                            all_coords.append(ccf_coords)
-                            file_channels += 1
-                            
-                            # Store coordinates for session/probe grouping
                             if session_probe_info:
                                 session_id, probe_id = session_probe_info
-                                session_probe_coords[(session_id, probe_id)].append(ccf_coords)
+                                # Use session_id, probe_id, and channel_id for uniqueness
+                                parts = label.split('_')
+                                channel_id = parts[3] if len(parts) > 3 else 'unknown'
+                                channel_key = (session_id, probe_id, channel_id)
+                                
+                                # Only add if we haven't seen this channel before
+                                if channel_key not in seen_channels_in_file:
+                                    seen_channels_in_file.add(channel_key)
+                                    
+                                    # Store channel information
+                                    channel_info = {
+                                        'coordinates': ccf_coords,
+                                        'session_id': session_id,
+                                        'probe_id': probe_id,
+                                        'channel_id': channel_id,
+                                        'filename': filename
+                                    }
+                                    
+                                    # Add to voxel (using set for deduplication)
+                                    voxel_to_channels[voxel_key].add(channel_key)
+                                    voxel_to_channel_info[voxel_key].append(channel_info)
+                                    all_coords.append(ccf_coords)
+                                    file_channels += 1
+                                    
+                                    # Store coordinates for session/probe grouping
+                                    session_probe_coords[(session_id, probe_id)].append(ccf_coords)
             
             if file_channels > 0:
                 successful_files += 1
-                logger.info(f"  Added {file_channels} channels from {filename}")
+                logger.info(f"  Added {file_channels} unique channels from {filename}")
             
         except Exception as e:
             logger.error(f"Error processing {pickle_path}: {e}")
@@ -274,7 +290,7 @@ def create_multi_channel_cube_visualization(voxel_to_channels, grid_info, output
     voxel_size_um = grid_info['voxel_size_um']
     
     # Process each voxel
-    for voxel_key, channels in tqdm(voxel_to_channels.items(), desc="Creating cubes"):
+    for voxel_key, unique_channels in tqdm(voxel_to_channels.items(), desc="Creating cubes"):
         voxel_x, voxel_y, voxel_z = voxel_key
         
         # Convert voxel coordinates back to physical coordinates
@@ -286,8 +302,8 @@ def create_multi_channel_cube_visualization(voxel_to_channels, grid_info, output
         cube_center = (ap_coord + voxel_size_um/2, dv_coord + voxel_size_um/2, lr_coord + voxel_size_um/2)
         vertices, faces = create_perfect_cube_vertices(cube_center, voxel_size_um)
         
-        # Determine color based on number of channels
-        channel_count = len(channels)
+        # Determine color based on number of unique channels
+        channel_count = len(unique_channels)
         hue = get_hue_for_channel_count(channel_count, max_channels)
         
         # Convert HSV to RGB
@@ -316,34 +332,60 @@ def create_multi_channel_cube_visualization(voxel_to_channels, grid_info, output
     ax.set_zlabel('Left-Right (μm)', fontsize=14)
     ax.set_title(f'Multi-Channel Voxel Cubes (1mm³)\nMax Channels per Voxel: {max_channels}', fontsize=16)
     
-    # Set axis limits
-    ax.set_xlim(grid_info['ap_min'], grid_info['ap_max'])
-    ax.set_ylim(grid_info['dv_min'], grid_info['dv_max'])
-    ax.set_zlim(grid_info['lr_min'], grid_info['lr_max'])
+    # Calculate actual coordinate ranges from the cubes
+    all_cube_coords = []
+    for voxel_key, unique_channels in voxel_to_channels.items():
+        voxel_x, voxel_y, voxel_z = voxel_key
+        ap_coord = voxel_x * voxel_size_um + grid_info['ap_min']
+        dv_coord = voxel_y * voxel_size_um + grid_info['dv_min']
+        lr_coord = voxel_z * voxel_size_um + grid_info['lr_min']
+        all_cube_coords.append([ap_coord, dv_coord, lr_coord])
     
-    # Set equal aspect ratio
-    max_range = np.array([
-        grid_info['ap_max'] - grid_info['ap_min'],
-        grid_info['dv_max'] - grid_info['dv_min'],
-        grid_info['lr_max'] - grid_info['lr_min']
-    ]).max() / 2.0
-    
-    mid_x = (grid_info['ap_min'] + grid_info['ap_max']) / 2
-    mid_y = (grid_info['dv_min'] + grid_info['dv_max']) / 2
-    mid_z = (grid_info['lr_min'] + grid_info['lr_max']) / 2
-    
-    ax.set_xlim(mid_x - max_range, mid_x + max_range)
-    ax.set_ylim(mid_y - max_range, mid_y + max_range)
-    ax.set_zlim(mid_z - max_range, mid_z + max_range)
+    if all_cube_coords:
+        all_cube_coords = np.array(all_cube_coords)
+        
+        # Set equal aspect ratio based on actual data
+        max_range = np.array([
+            all_cube_coords[:, 0].max() - all_cube_coords[:, 0].min(),
+            all_cube_coords[:, 1].max() - all_cube_coords[:, 1].min(),
+            all_cube_coords[:, 2].max() - all_cube_coords[:, 2].min()
+        ]).max() / 2.0
+        
+        mid_x = np.mean(all_cube_coords[:, 0])
+        mid_y = np.mean(all_cube_coords[:, 1])
+        mid_z = np.mean(all_cube_coords[:, 2])
+        
+        # Add some padding around the data
+        padding = max_range * 0.1
+        
+        ax.set_xlim(mid_x - max_range - padding, mid_x + max_range + padding)
+        ax.set_ylim(mid_y - max_range - padding, mid_y + max_range + padding)
+        ax.set_zlim(mid_z - max_range - padding, mid_z + max_range + padding)
+        
+        logger.info(f"Data center: AP={mid_x:.1f}, DV={mid_y:.1f}, LR={mid_z:.1f}")
+        logger.info(f"Data range: {max_range:.1f} μm")
+    else:
+        # Fallback to grid bounds if no cubes
+        ax.set_xlim(grid_info['ap_min'], grid_info['ap_max'])
+        ax.set_ylim(grid_info['dv_min'], grid_info['dv_max'])
+        ax.set_zlim(grid_info['lr_min'], grid_info['lr_max'])
     
     # Set viewing angle
     ax.view_init(elev=20, azim=45)
     
-    # Add colorbar
-    sm = plt.cm.ScalarMappable(cmap=plt.cm.hsv, norm=plt.Normalize(vmin=0, vmax=max_channels))
+    # Add colorbar with reasonable scaling
+    # Cap the colorbar at a reasonable maximum for better visualization
+    colorbar_max = min(max_channels, 20)  # Cap at 20 for better color distribution
+    sm = plt.cm.ScalarMappable(cmap=plt.cm.hsv, norm=plt.Normalize(vmin=1, vmax=colorbar_max))
     sm.set_array([])
     cbar = plt.colorbar(sm, ax=ax, shrink=0.5, aspect=20)
     cbar.set_label('Number of Channels per Voxel', fontsize=12)
+    
+    # Add note about actual max if it's higher than colorbar max
+    if max_channels > colorbar_max:
+        ax.text2D(0.02, 0.98, f'Note: Actual max = {max_channels}', 
+                 transform=ax.transAxes, fontsize=10, verticalalignment='top',
+                 bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
     
     # Save the plot
     output_file = os.path.join(output_dir, f"multi_channel_voxel_cubes_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
@@ -354,7 +396,7 @@ def create_multi_channel_cube_visualization(voxel_to_channels, grid_info, output
     
     return output_file
 
-def save_voxel_statistics(voxel_to_channels, session_probe_coords, grid_info, output_dir):
+def save_voxel_statistics(voxel_to_channels, voxel_to_channel_info, session_probe_coords, grid_info, output_dir):
     """Save detailed statistics about voxel usage."""
     logger.info("Saving voxel statistics...")
     
@@ -362,17 +404,17 @@ def save_voxel_statistics(voxel_to_channels, session_probe_coords, grid_info, ou
     voxel_stats = {
         'grid_info': grid_info,
         'total_voxels': len(voxel_to_channels),
-        'total_channels': sum(len(channels) for channels in voxel_to_channels.values()),
-        'max_channels_per_voxel': max(len(channels) for channels in voxel_to_channels.values()),
-        'min_channels_per_voxel': min(len(channels) for channels in voxel_to_channels.values()),
-        'avg_channels_per_voxel': sum(len(channels) for channels in voxel_to_channels.values()) / len(voxel_to_channels),
-        'unique_sessions': len(set(channel['session_id'] for channels in voxel_to_channels.values() for channel in channels)),
-        'unique_probes': len(set(channel['probe_id'] for channels in voxel_to_channels.values() for channel in channels)),
+        'total_unique_channels': sum(len(unique_channels) for unique_channels in voxel_to_channels.values()),
+        'max_channels_per_voxel': max(len(unique_channels) for unique_channels in voxel_to_channels.values()),
+        'min_channels_per_voxel': min(len(unique_channels) for unique_channels in voxel_to_channels.values()),
+        'avg_channels_per_voxel': sum(len(unique_channels) for unique_channels in voxel_to_channels.values()) / len(voxel_to_channels),
+        'unique_sessions': len(set(channel['session_id'] for channels in voxel_to_channel_info.values() for channel in channels)),
+        'unique_probes': len(set(channel['probe_id'] for channels in voxel_to_channel_info.values() for channel in channels)),
         'unique_session_probe_combinations': len(session_probe_coords)
     }
     
     # Channel count distribution
-    channel_counts = [len(channels) for channels in voxel_to_channels.values()]
+    channel_counts = [len(unique_channels) for unique_channels in voxel_to_channels.values()]
     voxel_stats['channel_count_distribution'] = {
         str(i): channel_counts.count(i) for i in range(1, max(channel_counts) + 1)
     }
@@ -389,7 +431,7 @@ def save_voxel_statistics(voxel_to_channels, session_probe_coords, grid_info, ou
     logger.info("VOXEL STATISTICS SUMMARY")
     logger.info("=" * 60)
     logger.info(f"Total voxels: {voxel_stats['total_voxels']:,}")
-    logger.info(f"Total channels: {voxel_stats['total_channels']:,}")
+    logger.info(f"Total unique channels: {voxel_stats['total_unique_channels']:,}")
     logger.info(f"Max channels per voxel: {voxel_stats['max_channels_per_voxel']}")
     logger.info(f"Min channels per voxel: {voxel_stats['min_channels_per_voxel']}")
     logger.info(f"Avg channels per voxel: {voxel_stats['avg_channels_per_voxel']:.2f}")
@@ -422,7 +464,7 @@ def main():
     
     try:
         # Collect all coordinates
-        voxel_to_channels, session_probe_coords, all_coords = collect_all_coordinates(
+        voxel_to_channels, voxel_to_channel_info, session_probe_coords, all_coords = collect_all_coordinates(
             args.pickle_dir, args.voxel_size
         )
         
@@ -443,7 +485,7 @@ def main():
         
         # Save statistics
         stats_file = save_voxel_statistics(
-            voxel_to_channels, session_probe_coords, grid_info, args.output_dir
+            voxel_to_channels, voxel_to_channel_info, session_probe_coords, grid_info, args.output_dir
         )
         
         logger.info("=" * 60)
