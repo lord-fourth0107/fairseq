@@ -442,13 +442,30 @@ def save_voxel_statistics(voxel_to_channels, voxel_to_channel_info, session_prob
     return output_file
 
 def main():
-    parser = argparse.ArgumentParser(description='Multi-Channel Voxel Cube Visualization')
+    parser = argparse.ArgumentParser(
+        description='Multi-Channel Voxel Cube Visualization',
+        epilog='''
+Examples:
+  # Default 1mm³ voxels
+  python multi_channel_voxel_cube_viz.py --pickle_dir /path/to/pickles
+  
+  # Smaller 0.5mm³ voxels for higher resolution
+  python multi_channel_voxel_cube_viz.py --pickle_dir /path/to/pickles --voxel_size 0.5
+  
+  # Larger 2mm³ voxels for lower resolution
+  python multi_channel_voxel_cube_viz.py --pickle_dir /path/to/pickles --voxel_size 2.0
+  
+  # Custom output directory
+  python multi_channel_voxel_cube_viz.py --pickle_dir /path/to/pickles --output_dir my_viz --voxel_size 1.5
+        ''',
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument('--pickle_dir', type=str, required=True,
-                       help='Directory containing pickle files')
+                       help='Directory containing pickle files with enriched coordinates')
     parser.add_argument('--output_dir', type=str, default='multi_channel_voxel_viz',
-                       help='Output directory for visualizations')
+                       help='Output directory for visualizations (default: multi_channel_voxel_viz)')
     parser.add_argument('--voxel_size', type=float, default=1.0,
-                       help='Voxel size in mm (default: 1.0)')
+                       help='Voxel size in millimeters (default: 1.0). Smaller values = higher resolution, larger values = lower resolution')
     
     args = parser.parse_args()
     

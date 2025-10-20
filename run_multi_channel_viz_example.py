@@ -86,16 +86,22 @@ def main():
     # Example usage - you can modify these paths as needed
     examples = [
         {
-            "name": "Example 1: Default 1mm voxels",
+            "name": "Example 1: Default 1mm³ voxels",
             "pickle_dir": "/path/to/your/pickle/files",  # Replace with actual path
             "output_dir": "multi_channel_viz_1mm",
             "voxel_size": 1.0
         },
         {
-            "name": "Example 2: Smaller 0.5mm voxels",
+            "name": "Example 2: High resolution 0.5mm³ voxels",
             "pickle_dir": "/path/to/your/pickle/files",  # Replace with actual path
             "output_dir": "multi_channel_viz_0.5mm",
             "voxel_size": 0.5
+        },
+        {
+            "name": "Example 3: Low resolution 2mm³ voxels",
+            "pickle_dir": "/path/to/your/pickle/files",  # Replace with actual path
+            "output_dir": "multi_channel_viz_2mm",
+            "voxel_size": 2.0
         }
     ]
     
@@ -138,8 +144,13 @@ def main():
         print("To run with your own data:")
         print(f"  python {Path(__file__).name} <pickle_directory> [output_directory] [voxel_size_mm]")
         print()
-        print("Example:")
-        print(f"  python {Path(__file__).name} /path/to/pickle/files my_viz_output 1.0")
+        print("Examples:")
+        print(f"  # Default 1mm³ voxels")
+        print(f"  python {Path(__file__).name} /path/to/pickle/files")
+        print(f"  # High resolution 0.5mm³ voxels")
+        print(f"  python {Path(__file__).name} /path/to/pickle/files my_viz_output 0.5")
+        print(f"  # Low resolution 2mm³ voxels")
+        print(f"  python {Path(__file__).name} /path/to/pickle/files my_viz_output 2.0")
 
 if __name__ == "__main__":
     main()
