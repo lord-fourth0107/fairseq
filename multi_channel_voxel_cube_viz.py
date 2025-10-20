@@ -35,31 +35,52 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+def _looks_like_number(s: str) -> bool:
+    """Check if string looks like a number (int or float)."""
+    try:
+        float(s)
+        return True
+    except ValueError:
+        return False
+
 def is_label_enriched(label):
-    """Check if label contains enriched coordinate information."""
-    return (isinstance(label, dict) and 
-            'ccf_coordinates' in label and 
-            label['ccf_coordinates'] is not None)
+    """Check if label contains enriched coordinate information.
+    Expected enriched label suffix: _{ap}_{dv}_{lr}_{probe_h}_{probe_v}
+    We check that the label has at least 9 underscore-separated parts and the
+    last 5 parts are numeric-like.
+    """
+    if not isinstance(label, str):
+        return False
+    parts = label.split('_')
+    if len(parts) < 9:
+        return False
+    tail = parts[-5:]
+    return all(_looks_like_number(x) for x in tail)
 
 def extract_ccf_coordinates(label):
-    """Extract CCF coordinates from enriched label."""
+    """Extract CCF coordinates from enriched label string."""
     if not is_label_enriched(label):
         return None
     
-    coords = label['ccf_coordinates']
-    if isinstance(coords, (list, tuple)) and len(coords) >= 3:
-        return tuple(coords[:3])  # AP, DV, LR
-    return None
+    parts = label.split('_')
+    try:
+        # Last 5 parts should be: ap, dv, lr, probe_h, probe_v
+        ap = float(parts[-5])
+        dv = float(parts[-4])
+        lr = float(parts[-3])
+        return (ap, dv, lr)
+    except (ValueError, IndexError):
+        return None
 
 def extract_session_probe_info(label):
-    """Extract session and probe information from label."""
-    if not isinstance(label, dict):
+    """Extract session and probe information from label string."""
+    if not isinstance(label, str):
         return None
     
-    session_id = label.get('session_id')
-    probe_id = label.get('probe_id')
-    
-    if session_id and probe_id:
+    parts = label.split('_')
+    if len(parts) >= 3:
+        session_id = parts[0]  # First part is session ID
+        probe_id = parts[2]   # Third part is probe ID
         return session_id, probe_id
     return None
 
@@ -107,9 +128,11 @@ def collect_all_coordinates(pickle_dir, voxel_size=1.0):
                             ap, dv, lr = ccf_coords
                             
                             # Convert to voxel coordinates (1mm³ voxels)
-                            voxel_x = int(np.round(ap / voxel_size))
-                            voxel_y = int(np.round(dv / voxel_size))
-                            voxel_z = int(np.round(lr / voxel_size))
+                            # Coordinates are in micrometers, voxel_size is in mm
+                            voxel_size_um = voxel_size * 1000  # Convert mm to μm
+                            voxel_x = int(np.round(ap / voxel_size_um))
+                            voxel_y = int(np.round(dv / voxel_size_um))
+                            voxel_z = int(np.round(lr / voxel_size_um))
                             
                             voxel_key = (voxel_x, voxel_y, voxel_z)
                             
