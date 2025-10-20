@@ -182,7 +182,7 @@ def collect_all_coordinates(pickle_dir, voxel_size=1.0):
     logger.info(f"Total coordinates collected: {len(all_coords)}")
     logger.info(f"Unique voxels: {len(voxel_to_channels)}")
     
-    return voxel_to_channels, session_probe_coords, all_coords
+    return voxel_to_channels, voxel_to_channel_info, session_probe_coords, all_coords
 
 def create_voxel_grid_info(all_coords, voxel_size=1.0):
     """Create grid information for voxelization."""
