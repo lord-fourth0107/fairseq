@@ -330,7 +330,7 @@ def create_multi_channel_cube_visualization(voxel_to_channels, grid_info, output
     ax.set_xlabel('Anterior-Posterior (μm)', fontsize=14)
     ax.set_ylabel('Dorsal-Ventral (μm)', fontsize=14)
     ax.set_zlabel('Left-Right (μm)', fontsize=14)
-    ax.set_title(f'Multi-Channel Voxel Cubes (1mm³)\nMax Channels per Voxel: {max_channels}', fontsize=16)
+    ax.set_title(f'Multi-Channel Voxel Cubes ({voxel_size}mm³)\nMax Channels per Voxel: {max_channels}', fontsize=16)
     
     # Calculate actual coordinate ranges from the cubes
     all_cube_coords = []
